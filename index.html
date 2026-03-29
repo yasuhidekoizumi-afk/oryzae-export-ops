@@ -1,0 +1,1559 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ORYZAE Export Ops</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @media print {
+      .no-print { display: none !important; }
+      body { background: white; }
+      .print-area { border: none !important; box-shadow: none !important; }
+    }
+    .hide-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+    .hide-scrollbar::-webkit-scrollbar { display: none; }
+  </style>
+</head>
+<body class="bg-gray-100">
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+// ==================== CONSTANTS ====================
+const TABS = [
+  { id: 'products',  label: '製品マスタ',   icon: '📦' },
+  { id: 'pricing',   label: '価格計算',     icon: '💰' },
+  { id: 'documents', label: '輸出書類',     icon: '📄' },
+  { id: 'buyers',    label: 'バイヤー管理', icon: '🤝' },
+  { id: 'fda',       label: 'FDA対応',      icon: '🏥' },
+  { id: 'schedule',  label: '船積管理',     icon: '🚢' },
+  { id: 'tariff',    label: '関税情報',     icon: '🔍' },
+  { id: 'settings',  label: '設定',         icon: '⚙️' },
+];
+
+const DEFAULT_PRODUCTS = [
+  { id: '1', name: 'KOJIPOP',    hsCode: '2202.99', unitCost: 280, weight: 0.35, unit: '缶', memo: '' },
+  { id: '2', name: '麹甘味料',   hsCode: '2106.90', unitCost: 450, weight: 0.15, unit: '袋', memo: '' },
+  { id: '3', name: '甘酒',       hsCode: '2202.99', unitCost: 380, weight: 0.50, unit: '本', memo: '' },
+  { id: '4', name: 'グラノーラ', hsCode: '1904.10', unitCost: 520, weight: 0.30, unit: '袋', memo: '' },
+];
+
+const DEFAULT_SETTINGS = {
+  companyNameJa: '株式会社オリゼ', companyNameEn: 'ORYZAE Inc.',
+  companyAddressEn: 'Tokyo, Japan', companyEmail: '', companyPhone: '',
+  slackWebhook: '', freightRate: 3.5, insuranceRate: 0.3,
+  domesticLogistics: 500, wholesaleMarkup: 2.0, retailMarkup: 2.0,
+};
+
+const BUYER_STATUSES = [
+  { id: 'prospect',    label: 'リード',        color: 'gray'   },
+  { id: 'sample_sent', label: 'サンプル送付済', color: 'yellow' },
+  { id: 'negotiating', label: '商談中',         color: 'blue'   },
+  { id: 'active',      label: '取引中',         color: 'green'  },
+  { id: 'inactive',    label: '休眠',           color: 'red'    },
+];
+
+const FDA_CHECKLIST = [
+  { id: 'facility_reg',    category: '施設登録', title: 'FDA食品施設登録（Bioterrorism Act）',  desc: '製造・加工・梱包・保管施設の登録。偶数年（2024, 2026…）10〜12月に更新必要。',                                    url: 'https://www.fda.gov/food/food-safety-modernization-act-fsma/registration-food-facilities-questions-and-answers', critical: true },
+  { id: 'prior_notice',    category: '事前通知', title: 'Prior Notice（事前通知）',             desc: '米国到着前に提出。航空便: 4時間前、海上便: 8時間前が目安。',                                                       url: 'https://www.fda.gov/food/importing-food-products-united-states/prior-notice-imported-food-shipments',            critical: true },
+  { id: 'fsvp',            category: 'FSVP',    title: 'FSVP（外国供給者確認プログラム）',    desc: '米国インポーター側の義務。HACCP等の安全性証明書類を準備。',                                                         url: 'https://www.fda.gov/food/food-safety-modernization-act-fsma/fsma-final-rule-foreign-supplier-verification-programs-fsvp-importers-food-humans-and-animals', critical: true },
+  { id: 'label_english',   category: 'ラベル',  title: '英語ラベル表示',                       desc: 'すべての表示事項を英語で記載。成分名はINCI/米国基準の英語名。',                                                     critical: true  },
+  { id: 'label_nutrition', category: 'ラベル',  title: 'Nutrition Facts（栄養成分表示）',      desc: 'FDA規定フォーマット準拠。Serving size, Calories, 各栄養素（%DV）必須。',                                           critical: true  },
+  { id: 'label_ingred',    category: 'ラベル',  title: 'Ingredient List（原材料表示）',        desc: '含有量の多い順に英語で列挙。',                                                                                       critical: true  },
+  { id: 'label_allergens', category: 'ラベル',  title: 'Allergen Declaration（アレルゲン）',   desc: 'Big 9: milk, eggs, fish, shellfish, tree nuts, peanuts, wheat, soybeans, sesame。FALCPA/FASTER Act準拠。',          critical: true  },
+  { id: 'label_net_qty',   category: 'ラベル',  title: 'Net Quantity（内容量）',               desc: '米国単位（oz/fl.oz/lbs）とSI単位（ml/g）の併記が必要。',                                                           critical: false },
+  { id: 'label_importer',  category: 'ラベル',  title: '輸入者住所表示',                       desc: '米国内バイヤー/輸入者の名称・住所をラベルに記載。',                                                                  critical: false },
+  { id: 'country_origin',  category: 'ラベル',  title: 'Country of Origin（原産国）',          desc: '"Product of Japan" または "Made in Japan" の表示。',                                                               critical: false },
+  { id: 'alcohol_check',   category: '飲料特有', title: 'アルコール含有量確認（甘酒・発酵飲料）', desc: '0.5%以上でアルコール飲料扱い→TTB管轄。COLA承認が別途必要。',                                                 critical: true  },
+  { id: 'health_claims',   category: '飲料特有', title: 'ヘルスクレーム確認',                  desc: '「腸活」「免疫」「回復」等はFDA規制対象。Nutrient Content ClaimとStructure/Function Claimの区別が必要。',             critical: true  },
+  { id: 'haccp',           category: '安全管理', title: 'HACCP / 食品安全計画',                desc: 'FSMAのPCQI準拠の食品安全計画の整備。',                                                                              critical: false },
+  { id: 'cbp_entry',       category: '通関',    title: 'CBP輸入申告（Form 7501）',             desc: '米国税関国境保護局への輸入申告。乙仲（通関業者）に委託が多い。',                                                   critical: false },
+];
+
+// ==================== STORAGE ====================
+const ls = {
+  get: (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+// ==================== EXCHANGE RATE（キャッシュ付き）====================
+async function fetchRate() {
+  const res = await fetch('https://api.frankfurter.app/latest?from=JPY&to=USD');
+  const d = await res.json();
+  const result = { rate: d.rates.USD, date: d.date };
+  ls.set('oryzae_rate_cache', { ...result, cachedAt: new Date().toISOString() });
+  const hist = ls.get('oryzae_rate_history', []);
+  if (!hist.find(h => h.date === result.date)) {
+    ls.set('oryzae_rate_history', [...hist, result].slice(-60));
+  }
+  return result;
+}
+function getCachedRate() {
+  const c = ls.get('oryzae_rate_cache', null);
+  if (!c) return null;
+  const age = (Date.now() - new Date(c.cachedAt)) / 1000 / 3600;
+  return age < 24 ? c : null; // 24時間以内なら有効
+}
+
+// ==================== NEXT INVOICE NO ====================
+function nextInvoiceNo(history) {
+  const year = new Date().getFullYear();
+  const nums = history
+    .map(s => { const m = s.invoiceNo?.match(/INV-(\d{4})-(\d+)/); return m && Number(m[1]) === year ? Number(m[2]) : 0; })
+    .filter(Boolean);
+  return `INV-${year}-${String(nums.length > 0 ? Math.max(...nums) + 1 : 1).padStart(3, '0')}`;
+}
+
+// ==================== PRODUCT MASTER ====================
+function ProductMaster({ products, setProducts, onGoToPricing }) {
+  const [editing, setEditing] = useState(null);
+  const empty = { name: '', hsCode: '', unitCost: '', weight: '', unit: '個', memo: '' };
+  const [form, setForm] = useState(empty);
+
+  const openNew  = () => { setEditing('new'); setForm(empty); };
+  const openEdit = (p) => { setEditing(p.id); setForm({ ...p }); };
+  const del      = (id) => { if (confirm('削除しますか？')) setProducts(products.filter(p => p.id !== id)); };
+
+  const save = () => {
+    if (!form.name || !form.hsCode) return alert('商品名とHSコードは必須です');
+    const item = { ...form, unitCost: Number(form.unitCost), weight: Number(form.weight) };
+    if (editing === 'new') setProducts([...products, { ...item, id: Date.now().toString() }]);
+    else setProducts(products.map(p => p.id === editing ? { ...item, id: editing } : p));
+    setEditing(null);
+  };
+
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-xl font-bold text-gray-800">製品マスタ</h2>
+        <button onClick={openNew} className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 text-sm">+ 商品追加</button>
+      </div>
+
+      {editing && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl p-6 w-full max-w-md shadow-2xl">
+            <h3 className="font-bold text-lg mb-4">{editing === 'new' ? '商品追加' : '商品編集'}</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="text-sm text-gray-600">商品名 *</label>
+                <input className="w-full border rounded p-2 mt-1" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="例: KOJIPOP" />
+              </div>
+              <div>
+                <label className="text-sm text-gray-600">HSコード *</label>
+                <input className="w-full border rounded p-2 mt-1 font-mono" value={form.hsCode} onChange={e => setForm({ ...form, hsCode: e.target.value })} placeholder="例: 2202.99" />
+                <p className="text-xs text-gray-400 mt-0.5">不明は「関税情報」タブで検索後に入力</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-sm text-gray-600">製造原価（円/個）</label>
+                  <input type="number" className="w-full border rounded p-2 mt-1" value={form.unitCost} onChange={e => setForm({ ...form, unitCost: e.target.value })} />
+                </div>
+                <div>
+                  <label className="text-sm text-gray-600">重量（kg/個）</label>
+                  <input type="number" step="0.01" className="w-full border rounded p-2 mt-1" value={form.weight} onChange={e => setForm({ ...form, weight: e.target.value })} />
+                </div>
+              </div>
+              <div>
+                <label className="text-sm text-gray-600">単位</label>
+                <input className="w-full border rounded p-2 mt-1" value={form.unit} onChange={e => setForm({ ...form, unit: e.target.value })} placeholder="缶、袋、本、個" />
+              </div>
+              <div>
+                <label className="text-sm text-gray-600">備考・メモ</label>
+                <input className="w-full border rounded p-2 mt-1" value={form.memo || ''} onChange={e => setForm({ ...form, memo: e.target.value })} placeholder="輸出仕様・注意事項など" />
+              </div>
+            </div>
+            <div className="flex gap-2 mt-5">
+              <button onClick={save} className="flex-1 bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700">保存</button>
+              <button onClick={() => setEditing(null)} className="flex-1 bg-gray-100 text-gray-700 py-2 rounded-lg hover:bg-gray-200">キャンセル</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="overflow-x-auto">
+        <table className="w-full bg-white rounded-xl shadow-sm text-sm">
+          <thead className="bg-gray-50 text-gray-600">
+            <tr>
+              <th className="text-left p-3">商品名</th>
+              <th className="text-left p-3">HSコード</th>
+              <th className="text-right p-3">製造原価（円）</th>
+              <th className="text-right p-3">重量（kg）</th>
+              <th className="text-left p-3">単位</th>
+              <th className="text-left p-3">備考</th>
+              <th className="p-3"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {products.map(p => (
+              <tr key={p.id} className="hover:bg-gray-50">
+                <td className="p-3 font-medium">{p.name}</td>
+                <td className="p-3">{p.hsCode ? <span className="font-mono text-blue-700 bg-blue-50 px-2 py-0.5 rounded">{p.hsCode}</span> : <span className="text-red-400 text-xs">未設定</span>}</td>
+                <td className="p-3 text-right">¥{Number(p.unitCost).toLocaleString()}</td>
+                <td className="p-3 text-right">{p.weight}</td>
+                <td className="p-3">{p.unit}</td>
+                <td className="p-3 text-xs text-gray-400 max-w-[120px] truncate">{p.memo}</td>
+                <td className="p-3 text-right whitespace-nowrap">
+                  <button onClick={() => onGoToPricing(p.id)} className="text-green-600 hover:text-green-800 mr-3 text-xs">価格計算 →</button>
+                  <button onClick={() => openEdit(p)} className="text-blue-600 hover:text-blue-800 mr-3">編集</button>
+                  <button onClick={() => del(p.id)} className="text-red-500 hover:text-red-700">削除</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {products.length === 0 && <p className="text-center text-gray-400 py-10">商品がありません</p>}
+      </div>
+    </div>
+  );
+}
+
+// ==================== PRICE CALCULATOR ====================
+function PriceCalculator({ products, settings, onSendToDoc, pendingPricePid, clearPendingPrice }) {
+  const [mode, setMode]         = useState('single'); // 'single' | 'compare'
+  const [productId, setPid]     = useState('');
+  const [qty, setQty]           = useState(1000);
+  const [override, setOvr]      = useState('');
+  const [freight, setFreight]   = useState(settings.freightRate || 3.5);
+  const [insurance, setInsurance] = useState(settings.insuranceRate || 0.3);
+  const [tariff, setTariff]     = useState(0);
+  const [rate, setRate]         = useState(null);
+  const [rateDate, setRDate]    = useState('');
+  const [loading, setLoad]      = useState(false);
+  const [fromCache, setFromCache] = useState(false);
+
+  useEffect(() => {
+    const cached = getCachedRate();
+    if (cached) { setRate(cached.rate); setRDate(cached.date); setFromCache(true); }
+    else loadRate();
+  }, []);
+
+  useEffect(() => {
+    if (!pendingPricePid) return;
+    setPid(pendingPricePid); setMode('single'); clearPendingPrice();
+  }, [pendingPricePid]);
+
+  const loadRate = async () => {
+    setLoad(true); setFromCache(false);
+    try { const d = await fetchRate(); setRate(d.rate); setRDate(d.date); }
+    catch { const c = getCachedRate(); if (c) { setRate(c.rate); setRDate(c.date); setFromCache(true); } else alert('為替レートの取得に失敗しました'); }
+    finally { setLoad(false); }
+  };
+
+  const calc = (p, q, ovr) => {
+    if (!rate || !p) return null;
+    const cost  = ovr !== undefined && ovr !== '' ? Number(ovr) : Number(p.unitCost);
+    const wt    = Number(p.weight) * q;
+    const factJ = cost * q;
+    const factU = factJ * rate;
+    const domU  = (settings.domesticLogistics || 500) * rate;
+    const fob   = factU + domU;
+    const frtU  = wt * freight;
+    const cfr   = fob + frtU;
+    const ins   = cfr * (insurance / 100);
+    const cif   = cfr + ins;
+    const duty  = cif * (tariff / 100);
+    const land  = cif + duty;
+    const whl   = land * (settings.wholesaleMarkup || 2.0);
+    const ret   = whl * (settings.retailMarkup || 2.0);
+    return { factJ, factU, domU, fob, frtU, ins, cif, duty, land, whl, ret, wt, cost, unitWhl: whl/q, unitRet: ret/q };
+  };
+
+  const p    = products.find(x => x.id === productId);
+  const res  = calc(p, qty, override);
+
+  const R = ({ label, usd, note, bold, indent, hi }) => (
+    <tr className={hi ? 'bg-blue-50' : ''}>
+      <td className={`p-2.5 text-sm ${bold ? 'font-semibold' : ''} ${indent ? 'pl-7 text-gray-500' : 'text-gray-700'}`}>{label}</td>
+      <td className={`p-2.5 text-right font-mono text-sm ${bold ? 'font-bold' : ''}`}>${usd.toFixed(2)}</td>
+      <td className="p-2.5 text-xs text-gray-400">{note || ''}</td>
+    </tr>
+  );
+
+  // 比較モード
+  const exportCSV = () => {
+    const dateStr = new Date().toLocaleDateString('ja-JP');
+    const rateStr = rate ? `1円=$${rate.toFixed(6)}(${rateDate})` : '未取得';
+    const meta = [`# ORYZAE 価格計算シート`, `# 出力日: ${dateStr}`, `# 為替レート: ${rateStr}`, `# 数量: ${qty}個`, ''];
+    const headers = ['商品名', 'HSコード', '製造原価(JPY)', 'FOB(USD)', 'CIF(USD)', 'ランデッド(USD)', '卸値/個(USD)', '小売/個(USD)', '粗利率(卸)%'];
+    const rows = products.map(prod => {
+      const r = calc(prod, qty, undefined);
+      if (!r) return null;
+      return [prod.name, prod.hsCode, r.factJ.toFixed(0), r.fob.toFixed(2), r.cif.toFixed(2), r.land.toFixed(2), r.unitWhl.toFixed(2), r.unitRet.toFixed(2), (((r.whl - r.factU) / r.whl) * 100).toFixed(1)];
+    }).filter(Boolean);
+    const csv = [...meta, headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const url = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' }));
+    Object.assign(document.createElement('a'), { href: url, download: `oryzae-price-${new Date().toISOString().split('T')[0]}.csv` }).click();
+    URL.revokeObjectURL(url);
+  };
+
+  const CompareTable = () => (
+    <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+      <div className="bg-gray-900 text-white px-4 py-3 font-semibold text-sm flex items-center justify-between">
+        <span>全商品 価格比較（数量: {qty.toLocaleString()}個/袋/缶）</span>
+        <button onClick={exportCSV} className="text-xs bg-white text-gray-800 px-3 py-1 rounded hover:bg-gray-100">CSV出力</button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 text-gray-500 text-xs">
+            <tr>
+              <th className="text-left p-2.5">商品名</th>
+              <th className="text-right p-2.5">製造原価(JPY)</th>
+              <th className="text-right p-2.5">FOB(USD)</th>
+              <th className="text-right p-2.5">CIF(USD)</th>
+              <th className="text-right p-2.5">ランデッド(USD)</th>
+              <th className="text-right p-2.5 text-blue-600">卸値/個(USD)</th>
+              <th className="text-right p-2.5 text-green-600">小売/個(USD)</th>
+              <th className="text-right p-2.5 text-purple-600">粗利率(卸)</th>
+              <th className="p-2.5"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {products.map(prod => {
+              const r = calc(prod, qty, undefined);
+              if (!r) return null;
+              return (
+                <tr key={prod.id} className="hover:bg-gray-50">
+                  <td className="p-2.5 font-medium">{prod.name}</td>
+                  <td className="p-2.5 text-right font-mono">¥{r.factJ.toLocaleString()}</td>
+                  <td className="p-2.5 text-right font-mono">${r.fob.toFixed(0)}</td>
+                  <td className="p-2.5 text-right font-mono">${r.cif.toFixed(0)}</td>
+                  <td className="p-2.5 text-right font-mono">${r.land.toFixed(0)}</td>
+                  <td className="p-2.5 text-right font-mono font-semibold text-blue-700">${r.unitWhl.toFixed(2)}</td>
+                  <td className="p-2.5 text-right font-mono font-semibold text-green-700">${r.unitRet.toFixed(2)}</td>
+                  <td className="p-2.5 text-right font-mono font-semibold text-purple-700">{(((r.whl - r.factU) / r.whl) * 100).toFixed(1)}%</td>
+                  <td className="p-2.5">
+                    <button onClick={() => onSendToDoc(prod, r, qty)} className="text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded hover:bg-blue-100">書類へ</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-bold text-gray-800">価格計算</h2>
+        <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+          <button onClick={() => setMode('single')} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${mode === 'single' ? 'bg-white shadow text-gray-800' : 'text-gray-500'}`}>単品</button>
+          <button onClick={() => setMode('compare')} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${mode === 'compare' ? 'bg-white shadow text-gray-800' : 'text-gray-500'}`}>全商品比較</button>
+        </div>
+      </div>
+
+      {/* 為替レート */}
+      <div className="bg-white rounded-xl p-4 mb-4 shadow-sm flex items-center gap-4">
+        <div>
+          <p className="text-xs text-gray-500">USD/JPY換算レート {fromCache && <span className="text-amber-500">（キャッシュ）</span>}</p>
+          {rate ? <p className="text-2xl font-bold text-blue-700">1円 = ${rate.toFixed(6)} <span className="text-sm font-normal text-gray-400">（{rateDate}）</span></p>
+                : <p className="text-gray-400 text-sm">未取得</p>}
+        </div>
+        {(() => {
+          const hist = ls.get('oryzae_rate_history', []);
+          if (hist.length < 2) return null;
+          const rates = hist.map(h => h.rate);
+          const min = Math.min(...rates), max = Math.max(...rates);
+          const W = 120, H = 32;
+          const pts = rates.map((r, i) => `${(i/(rates.length-1))*W},${H - ((r-min)/(max-min||0.0001))*H}`).join(' ');
+          return (
+            <div className="flex items-end gap-1.5">
+              <svg width={W} height={H}><polyline points={pts} fill="none" stroke="#3b82f6" strokeWidth="1.5" strokeLinejoin="round" /></svg>
+              <span className="text-xs text-gray-400">{hist.length}件</span>
+            </div>
+          );
+        })()}
+        <button onClick={loadRate} disabled={loading} className="ml-auto bg-blue-50 text-blue-700 px-4 py-2 rounded-lg text-sm hover:bg-blue-100">
+          {loading ? '取得中…' : '更新'}
+        </button>
+      </div>
+
+      {/* 共通入力 */}
+      <div className="bg-white rounded-xl p-4 mb-4 shadow-sm">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {mode === 'single' && (
+            <div>
+              <label className="text-sm text-gray-600">商品</label>
+              <select className="w-full border rounded p-2 mt-1" value={productId} onChange={e => { setPid(e.target.value); setOvr(''); }}>
+                <option value="">-- 選択 --</option>
+                {products.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
+              </select>
+            </div>
+          )}
+          <div>
+            <label className="text-sm text-gray-600">数量</label>
+            <input type="number" className="w-full border rounded p-2 mt-1" value={qty} onChange={e => setQty(Number(e.target.value))} />
+          </div>
+          {mode === 'single' && (
+            <div>
+              <label className="text-sm text-gray-600">原価（円/個）※上書き可</label>
+              <input type="number" className="w-full border rounded p-2 mt-1" value={override !== '' ? override : (p?.unitCost || '')} onChange={e => setOvr(e.target.value)} placeholder={p?.unitCost || '原価'} />
+            </div>
+          )}
+          <div>
+            <label className="text-sm text-gray-600">海上運賃（USD/kg）</label>
+            <input type="number" step="0.1" className="w-full border rounded p-2 mt-1" value={freight} onChange={e => setFreight(Number(e.target.value))} />
+          </div>
+          {mode === 'single' && (
+            <div>
+              <label className="text-sm text-gray-600">保険料率（%）</label>
+              <input type="number" step="0.01" className="w-full border rounded p-2 mt-1" value={insurance} onChange={e => setInsurance(Number(e.target.value))} />
+            </div>
+          )}
+          <div>
+            <label className="text-sm text-gray-600">関税率（%）</label>
+            <input type="number" step="0.1" className="w-full border rounded p-2 mt-1" value={tariff} onChange={e => setTariff(Number(e.target.value))} />
+          </div>
+        </div>
+      </div>
+
+      {/* 比較モード */}
+      {mode === 'compare' && rate && <CompareTable />}
+
+      {/* 単品モード */}
+      {mode === 'single' && rate && p && res && (
+        <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+          <div className="bg-gray-900 text-white px-4 py-3 font-semibold text-sm flex items-center justify-between">
+            <span>価格ウォーターフォール — {p.name} × {qty.toLocaleString()}{p.unit}</span>
+            <button onClick={() => onSendToDoc(p, res, qty)} className="bg-blue-500 hover:bg-blue-400 text-white text-xs px-3 py-1.5 rounded-lg">→ 書類作成へ反映</button>
+          </div>
+          <table className="w-full">
+            <thead className="bg-gray-50 text-xs text-gray-500">
+              <tr><th className="text-left p-2.5">項目</th><th className="text-right p-2.5">USD（合計）</th><th className="text-left p-2.5">備考</th></tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              <R label="製造原価"   usd={res.factU} note={`¥${res.factJ.toLocaleString()}`} />
+              <R label="国内物流費" usd={res.domU}  indent />
+              <R label="FOB"        usd={res.fob}   bold hi note="本船渡し" />
+              <R label="海上運賃"   usd={res.frtU}  indent note={`${res.wt.toFixed(1)}kg × $${freight}/kg`} />
+              <R label="保険料"     usd={res.ins}   indent note={`${insurance}%`} />
+              <R label="CIF"        usd={res.cif}   bold hi note="運賃保険料込" />
+              <R label="関税"       usd={res.duty}  indent note={`${tariff}%`} />
+              <R label="ランデッドコスト" usd={res.land} bold hi note="米国着後コスト" />
+              <R label={`卸値（×${settings.wholesaleMarkup || 2}）`}  usd={res.whl} bold hi />
+              <R label={`小売価格（×${settings.retailMarkup || 2}）`} usd={res.ret} bold hi />
+            </tbody>
+          </table>
+          <div className="bg-green-50 border-t p-4">
+            <div className="flex items-start justify-between mb-3">
+              <div>
+                <p className="text-xs text-gray-500">1個あたり想定小売価格</p>
+                <p className="text-3xl font-bold text-green-700">${res.unitRet.toFixed(2)}</p>
+              </div>
+              <div className="text-right text-xs text-gray-500 space-y-0.5">
+                <p>製造原価/個: ¥{res.cost.toLocaleString()} / ${(res.factU / qty).toFixed(3)}</p>
+                <p>ランデッド/個: ${(res.land / qty).toFixed(2)}</p>
+                <p>卸値/個: <span className="font-semibold text-blue-700">${res.unitWhl.toFixed(2)}</span></p>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="bg-white rounded p-2 text-center">
+                <p className="text-gray-400">粗利率（卸値ベース）</p>
+                <p className="font-bold text-blue-700 text-base">{(((res.whl - res.factU) / res.whl) * 100).toFixed(1)}%</p>
+              </div>
+              <div className="bg-white rounded p-2 text-center">
+                <p className="text-gray-400">粗利率（小売ベース）</p>
+                <p className="font-bold text-green-700 text-base">{(((res.ret - res.factU) / res.ret) * 100).toFixed(1)}%</p>
+              </div>
+              <div className="bg-white rounded p-2 text-center">
+                <p className="text-gray-400">粗利額/個（卸値）</p>
+                <p className="font-bold text-purple-700 text-base">${(res.unitWhl - res.factU / qty).toFixed(2)}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mode === 'single' && !rate && <div className="bg-white rounded-xl p-10 text-center text-gray-400 shadow-sm">為替レートを取得してください</div>}
+      {mode === 'single' && rate && !p && <div className="bg-white rounded-xl p-10 text-center text-gray-400 shadow-sm">商品を選択してください</div>}
+    </div>
+  );
+}
+
+// ==================== DOCUMENT CREATOR ====================
+function DocumentCreator({ products, settings, buyers, shipHistory, setShipHistory, pendingDocItem, clearPendingDoc }) {
+  const emptyShipment = (history) => ({
+    invoiceNo: nextInvoiceNo(history),
+    date: new Date().toISOString().split('T')[0],
+    poNumber: '', consigneeName: '', consigneeAddress: '', consigneePhone: '',
+    portOfLoading: 'Tokyo, Japan', portOfDischarge: 'Los Angeles, CA, USA',
+    incoterms: 'FOB', paymentTerms: 'T/T in advance', items: [],
+  });
+
+  const [docType, setDocType]   = useState('invoice');
+  const [shipment, setShipment] = useState(() => ls.get('oryzae_current_shipment', null) || emptyShipment([]));
+  const [newItem, setNewItem]   = useState({ productId: '', qty: '', unitPrice: '' });
+  const [showHistory, setShowH] = useState(false);
+  const [savedMsg, setSaved]    = useState(false);
+  const upd = (k, v) => setShipment(s => ({ ...s, [k]: v }));
+
+  // 価格計算からの自動反映（商品ラインに直接追加）
+  useEffect(() => {
+    if (!pendingDocItem) return;
+    const { product, result, qty } = pendingDocItem;
+    const prod = products.find(x => x.id === product.id);
+    if (prod) {
+      const unitPrice = Number(result.unitWhl.toFixed(2));
+      const item = { id: Date.now().toString(), name: prod.name, hsCode: prod.hsCode, unit: prod.unit, weight: Number(prod.weight), qty: Number(qty), unitPrice, total: Number(qty) * unitPrice, dims: '' };
+      setShipment(s => ({ ...s, items: [...s.items, item] }));
+    }
+    clearPendingDoc();
+  }, [pendingDocItem]);
+
+  useEffect(() => { ls.set('oryzae_current_shipment', shipment); }, [shipment]);
+
+  // バイヤーから自動入力
+  const fillFromBuyer = (buyer) => {
+    setShipment(s => ({ ...s, consigneeName: buyer.company, consigneeAddress: buyer.address || '', consigneePhone: buyer.phone || '' }));
+  };
+
+  const addItem = () => {
+    const prod = products.find(x => x.id === newItem.productId);
+    if (!prod || !newItem.qty || !newItem.unitPrice) return alert('商品・数量・単価を入力してください');
+    const item = { id: Date.now().toString(), name: prod.name, hsCode: prod.hsCode, unit: prod.unit, weight: Number(prod.weight), qty: Number(newItem.qty), unitPrice: Number(newItem.unitPrice), total: Number(newItem.qty) * Number(newItem.unitPrice), dims: '' };
+    setShipment(s => ({ ...s, items: [...s.items, item] }));
+    setNewItem({ productId: '', qty: '', unitPrice: '' });
+  };
+  const rmItem  = (id) => setShipment(s => ({ ...s, items: s.items.filter(i => i.id !== id) }));
+  const updItem = (id, k, v) => setShipment(s => ({ ...s, items: s.items.map(i => i.id === id ? { ...i, [k]: v, total: k === 'qty' || k === 'unitPrice' ? (k === 'qty' ? Number(v) : i.qty) * (k === 'unitPrice' ? Number(v) : i.unitPrice) : i.total } : i) }));
+
+  const saveToHistory = () => {
+    if (!shipment.consigneeName || shipment.items.length === 0) return alert('Consignee名と商品を入力してから保存してください');
+    const updated = [{ ...shipment, savedAt: new Date().toISOString() }, ...shipHistory.filter(h => h.invoiceNo !== shipment.invoiceNo)].slice(0, 50);
+    setShipHistory(updated);
+    setSaved(true); setTimeout(() => setSaved(false), 2000);
+  };
+  const loadFromHistory = (h) => { setShipment({ ...h }); setShowH(false); };
+  const delHistory = (inv) => setShipHistory(shipHistory.filter(h => h.invoiceNo !== inv));
+  const newDoc = () => { if (confirm('現在の内容をクリアして新規作成しますか？')) setShipment(emptyShipment(shipHistory)); };
+
+  const totalAmt = shipment.items.reduce((s, i) => s + i.total, 0);
+  const totalWt  = shipment.items.reduce((s, i) => s + i.qty * i.weight, 0);
+
+  // ---- 書類テンプレート ----
+  const ShipHead = ({ title, sub }) => (
+    <div className="flex justify-between items-start mb-6">
+      <div><h1 className="text-2xl font-bold">{title}</h1>{sub && <p className="text-gray-500 text-sm mt-0.5">{sub}</p>}</div>
+      <div className="text-right text-sm"><p className="font-bold">{settings.companyNameEn}</p><p className="text-gray-500">{settings.companyAddressEn}</p><p className="text-gray-500">{settings.companyEmail}</p></div>
+    </div>
+  );
+  const AddrBox = ({ title, name, addr, phone }) => (
+    <div className="border p-3 rounded"><p className="text-xs font-semibold text-gray-500 mb-1 uppercase">{title}</p><p className="font-semibold">{name || '—'}</p><p className="text-gray-600 text-sm">{addr}</p>{phone && <p className="text-gray-600 text-sm">{phone}</p>}</div>
+  );
+
+  const Invoice = () => (
+    <div className="print-area bg-white p-8 border rounded-xl text-sm">
+      <ShipHead title="COMMERCIAL INVOICE" sub={`Invoice No: ${shipment.invoiceNo}${shipment.poNumber ? ' | PO: ' + shipment.poNumber : ''} | Date: ${shipment.date}`} />
+      <div className="grid grid-cols-2 gap-4 mb-5">
+        <AddrBox title="Shipper / Exporter" name={settings.companyNameEn} addr={settings.companyAddressEn} />
+        <AddrBox title="Consignee" name={shipment.consigneeName} addr={shipment.consigneeAddress} phone={shipment.consigneePhone} />
+      </div>
+      <div className="grid grid-cols-4 gap-3 bg-gray-50 p-3 rounded mb-5 text-xs">
+        {[['Incoterms', shipment.incoterms], ['Port of Loading', shipment.portOfLoading], ['Port of Discharge', shipment.portOfDischarge], ['Payment Terms', shipment.paymentTerms]].map(([k, v]) => (
+          <div key={k}><p className="text-gray-400">{k}</p><p className="font-semibold">{v}</p></div>
+        ))}
+      </div>
+      <table className="w-full border-collapse mb-4">
+        <thead><tr className="bg-gray-900 text-white"><th className="p-2 text-left">Description of Goods</th><th className="p-2 text-center">HS Code</th><th className="p-2 text-center">Qty</th><th className="p-2 text-right">Unit Price (USD)</th><th className="p-2 text-right">Amount (USD)</th></tr></thead>
+        <tbody className="divide-y divide-gray-200">
+          {shipment.items.map(i => <tr key={i.id}><td className="p-2">{i.name}</td><td className="p-2 text-center font-mono">{i.hsCode}</td><td className="p-2 text-center">{i.qty} {i.unit}</td><td className="p-2 text-right">${i.unitPrice.toFixed(2)}</td><td className="p-2 text-right">${i.total.toFixed(2)}</td></tr>)}
+        </tbody>
+        <tfoot><tr className="font-bold bg-gray-50"><td colSpan="4" className="p-2 text-right">TOTAL</td><td className="p-2 text-right">${totalAmt.toFixed(2)}</td></tr></tfoot>
+      </table>
+      <div className="text-xs text-gray-500 mt-4 space-y-1"><p>Country of Origin: Japan</p><p>I/We hereby certify that the information on this invoice is true and correct.</p></div>
+      <div className="mt-8 grid grid-cols-2 gap-8">
+        <div className="border-t pt-3"><p className="text-xs text-gray-400">Authorized Signature &amp; Company Stamp</p><div className="h-14"></div><p className="font-semibold">{settings.companyNameEn}</p></div>
+        <div className="border-t pt-3"><p className="text-xs text-gray-400">Date</p><p className="mt-2">{shipment.date}</p></div>
+      </div>
+    </div>
+  );
+
+  const PackingList = () => (
+    <div className="print-area bg-white p-8 border rounded-xl text-sm">
+      <ShipHead title="PACKING LIST" sub={`Invoice No: ${shipment.invoiceNo} | Date: ${shipment.date}`} />
+      <div className="grid grid-cols-2 gap-4 mb-5">
+        <AddrBox title="Shipper" name={settings.companyNameEn} addr={settings.companyAddressEn} />
+        <AddrBox title="Consignee" name={shipment.consigneeName} addr={shipment.consigneeAddress} />
+      </div>
+      <table className="w-full border-collapse mb-4">
+        <thead><tr className="bg-gray-900 text-white"><th className="p-2 text-left">Description</th><th className="p-2 text-center">Qty</th><th className="p-2 text-center">Net Wt (kg)</th><th className="p-2 text-center">Gross Wt (kg)</th><th className="p-2 text-center">Dimensions (cm)</th><th className="p-2 text-center">Cartons</th></tr></thead>
+        <tbody className="divide-y divide-gray-200">
+          {shipment.items.map(i => { const net = i.qty * i.weight; return (
+            <tr key={i.id}><td className="p-2">{i.name}</td><td className="p-2 text-center">{i.qty} {i.unit}</td><td className="p-2 text-center">{net.toFixed(2)}</td><td className="p-2 text-center">{(net * 1.1).toFixed(2)}</td><td className="p-2 text-center text-gray-500">{i.dims || '—'}</td><td className="p-2 text-center">—</td></tr>
+          ); })}
+        </tbody>
+        <tfoot><tr className="font-bold bg-gray-50"><td className="p-2">TOTAL</td><td className="p-2 text-center">{shipment.items.reduce((s, i) => s + i.qty, 0)}</td><td className="p-2 text-center">{totalWt.toFixed(2)}</td><td className="p-2 text-center">{(totalWt * 1.1).toFixed(2)}</td><td className="p-2"></td><td className="p-2 text-center">—</td></tr></tfoot>
+      </table>
+      <div className="mt-8 grid grid-cols-2 gap-8">
+        <div className="border-t pt-3"><p className="text-xs text-gray-400">Authorized Signature</p><div className="h-14"></div><p className="font-semibold">{settings.companyNameEn}</p></div>
+        <div className="border-t pt-3"><p className="text-xs text-gray-400">Date</p><p className="mt-2">{shipment.date}</p></div>
+      </div>
+    </div>
+  );
+
+  const COO = () => (
+    <div className="print-area bg-white p-8 border rounded-xl text-sm">
+      <div className="text-center mb-6"><h1 className="text-2xl font-bold uppercase">Certificate of Origin</h1><p className="text-gray-500 mt-1">Non-Preferential</p></div>
+      <div className="grid grid-cols-2 gap-4 mb-4">
+        <div className="border p-3 rounded"><p className="text-xs font-semibold text-gray-500 mb-1">1. Exporter</p><p className="font-semibold">{settings.companyNameEn}</p><p>{settings.companyAddressEn}</p><p>Japan</p></div>
+        <div className="border p-3 rounded"><p className="text-xs font-semibold text-gray-500 mb-1">2. Consignee</p><p className="font-semibold">{shipment.consigneeName || '—'}</p><p>{shipment.consigneeAddress}</p></div>
+      </div>
+      <div className="border p-3 rounded mb-4"><p className="text-xs font-semibold text-gray-500 mb-1">3. Transport Details</p><p>From: {shipment.portOfLoading} → To: {shipment.portOfDischarge}</p></div>
+      <table className="w-full border-collapse mb-6">
+        <thead><tr className="bg-gray-900 text-white"><th className="p-2 text-left">#</th><th className="p-2 text-left">Description</th><th className="p-2 text-center">HS Code</th><th className="p-2 text-center">Qty</th><th className="p-2 text-center">Country of Origin</th></tr></thead>
+        <tbody className="divide-y divide-gray-200">
+          {shipment.items.map((i, idx) => <tr key={i.id}><td className="p-2 text-center">{idx + 1}</td><td className="p-2">{i.name}</td><td className="p-2 text-center font-mono">{i.hsCode}</td><td className="p-2 text-center">{i.qty} {i.unit}</td><td className="p-2 text-center">Japan</td></tr>)}
+        </tbody>
+      </table>
+      <div className="border p-3 rounded mb-6 text-xs"><p className="font-semibold mb-1">Declaration by the Exporter</p><p className="text-gray-600">The undersigned hereby declares that the above details are correct, that all the goods were produced in <strong>Japan</strong>.</p></div>
+      <div className="grid grid-cols-2 gap-8 mt-4">
+        <div className="border-t pt-3"><p className="text-xs text-gray-400">Certifying authority</p><div className="h-14"></div></div>
+        <div className="border-t pt-3"><p className="text-xs text-gray-400">Exporter signature</p><div className="h-10"></div><p className="font-semibold">{settings.companyNameEn}</p><p className="text-gray-500">{shipment.date}</p></div>
+      </div>
+    </div>
+  );
+
+  const SLI = () => (
+    <div className="print-area bg-white p-8 border rounded-xl text-sm">
+      <h1 className="text-2xl font-bold mb-1">SHIPPER'S LETTER OF INSTRUCTION</h1>
+      <p className="text-gray-500 mb-5">Date: {shipment.date} | Ref: {shipment.invoiceNo}{shipment.poNumber ? ' | PO: ' + shipment.poNumber : ''}</p>
+      <div className="grid grid-cols-2 gap-4 mb-4">
+        <AddrBox title="Shipper" name={settings.companyNameEn} addr={settings.companyAddressEn} phone={settings.companyPhone} />
+        <AddrBox title="Consignee" name={shipment.consigneeName} addr={shipment.consigneeAddress} phone={shipment.consigneePhone} />
+      </div>
+      <div className="grid grid-cols-3 gap-3 bg-gray-50 p-3 rounded mb-4 text-sm">
+        {[['Incoterms', shipment.incoterms], ['Port of Loading', shipment.portOfLoading], ['Port of Discharge', shipment.portOfDischarge]].map(([k, v]) => <div key={k}><p className="text-xs text-gray-400">{k}</p><p className="font-semibold">{v}</p></div>)}
+      </div>
+      <table className="w-full border-collapse mb-4">
+        <thead><tr className="bg-gray-900 text-white"><th className="p-2 text-left">Commodity</th><th className="p-2 text-center">HS Code</th><th className="p-2 text-center">Qty</th><th className="p-2 text-right">Value (USD)</th></tr></thead>
+        <tbody className="divide-y divide-gray-200">
+          {shipment.items.map(i => <tr key={i.id}><td className="p-2">{i.name}</td><td className="p-2 text-center font-mono">{i.hsCode}</td><td className="p-2 text-center">{i.qty} {i.unit}</td><td className="p-2 text-right">${i.total.toFixed(2)}</td></tr>)}
+          <tr className="font-bold bg-gray-50"><td colSpan="3" className="p-2 text-right">TOTAL</td><td className="p-2 text-right">${totalAmt.toFixed(2)}</td></tr>
+        </tbody>
+      </table>
+      <div className="border p-3 rounded text-xs text-gray-600 mb-6"><p className="font-semibold mb-1">Special Instructions:</p><p>Please prepare Commercial Invoice × 3, Packing List × 2, Certificate of Origin × 1. All goods are of Japanese origin. Please confirm booking and provide B/L draft for our review before release.</p></div>
+      <div className="border-t pt-4"><p className="text-xs text-gray-400">Authorized Signature</p><div className="h-10"></div><p className="font-semibold">{settings.companyNameEn}</p><p className="text-gray-500">{shipment.date}</p></div>
+    </div>
+  );
+
+  const DOC_TABS = [
+    { id: 'invoice', label: 'Commercial Invoice' },
+    { id: 'packing', label: 'Packing List' },
+    { id: 'coo',     label: 'Certificate of Origin' },
+    { id: 'sli',     label: "Shipper's Letter of Instruction" },
+  ];
+
+  return (
+    <div>
+      <h2 className="text-xl font-bold text-gray-800 mb-4">輸出書類作成</h2>
+
+      {/* 書類タイプ + アクション */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap no-print">
+        <div className="flex gap-1 bg-gray-100 rounded-lg p-1 flex-wrap">
+          {DOC_TABS.map(d => (
+            <button key={d.id} onClick={() => setDocType(d.id)}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium whitespace-nowrap transition-colors ${docType === d.id ? 'bg-white shadow text-gray-800' : 'text-gray-500 hover:text-gray-700'}`}>
+              {d.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-2 ml-auto">
+          <button onClick={() => setShowH(true)} className="px-3 py-2 bg-white border rounded-lg text-sm text-gray-600 hover:bg-gray-50">履歴 ({shipHistory.length})</button>
+          <button onClick={saveToHistory} className={`px-3 py-2 rounded-lg text-sm font-medium ${savedMsg ? 'bg-green-100 text-green-700' : 'bg-white border text-gray-600 hover:bg-gray-50'}`}>{savedMsg ? '✓ 保存済み' : '保存'}</button>
+          <button onClick={newDoc} className="px-3 py-2 bg-white border rounded-lg text-sm text-gray-600 hover:bg-gray-50">新規</button>
+        </div>
+      </div>
+
+      {/* 履歴モーダル */}
+      {showHistory && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 no-print">
+          <div className="bg-white rounded-xl p-6 w-full max-w-2xl shadow-2xl max-h-[80vh] flex flex-col">
+            <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg">書類履歴</h3><button onClick={() => setShowH(false)} className="text-gray-400 hover:text-gray-600 text-xl">✕</button></div>
+            <div className="overflow-y-auto flex-1">
+              {shipHistory.length === 0 ? <p className="text-gray-400 text-center py-8">保存された書類はありません</p> : shipHistory.map(h => (
+                <div key={h.invoiceNo} className="flex items-center gap-3 p-3 border-b hover:bg-gray-50">
+                  <div className="flex-1">
+                    <p className="font-medium text-sm">{h.invoiceNo}</p>
+                    <p className="text-xs text-gray-500">{h.consigneeName} | {h.date} | ${h.items.reduce((s, i) => s + i.total, 0).toFixed(2)}</p>
+                    <p className="text-xs text-gray-400">{h.items.map(i => i.name).join(', ')}</p>
+                  </div>
+                  <button onClick={() => loadFromHistory(h)} className="text-blue-600 text-sm px-3 py-1 border border-blue-200 rounded hover:bg-blue-50">読込</button>
+                  <button onClick={() => delHistory(h.invoiceNo)} className="text-red-400 hover:text-red-600 text-sm">削除</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 基本情報 */}
+      <div className="bg-white rounded-xl p-4 mb-4 shadow-sm no-print">
+        <h3 className="font-semibold text-gray-700 mb-3">基本情報</h3>
+
+        {/* バイヤーから自動入力 */}
+        {buyers.length > 0 && (
+          <div className="mb-3 flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-gray-500 flex-shrink-0">Consignee自動入力:</span>
+            {buyers.map(b => (
+              <button key={b.id} onClick={() => fillFromBuyer(b)}
+                className={`text-xs px-2 py-1 rounded hover:opacity-80 ${b.status === 'active' ? 'bg-green-100 text-green-700' : b.status === 'negotiating' ? 'bg-blue-50 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>
+                {b.company}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {[['Invoice No.', 'invoiceNo', 'text'], ['Date', 'date', 'date'], ['PO番号（任意）', 'poNumber', 'text'], ['Consignee Name', 'consigneeName', 'text'], ['Consignee Address', 'consigneeAddress', 'text'], ['Consignee Phone', 'consigneePhone', 'text'], ['Port of Loading', 'portOfLoading', 'text'], ['Port of Discharge', 'portOfDischarge', 'text'], ['Payment Terms', 'paymentTerms', 'text']].map(([lbl, k, t]) => (
+            <div key={k} className={k === 'consigneeAddress' ? 'md:col-span-2' : ''}>
+              <label className="text-sm text-gray-600">{lbl}</label>
+              <input type={t} className="w-full border rounded p-2 mt-1" value={shipment[k] || ''} onChange={e => upd(k, e.target.value)} />
+            </div>
+          ))}
+          <div>
+            <label className="text-sm text-gray-600">Incoterms</label>
+            <select className="w-full border rounded p-2 mt-1" value={shipment.incoterms} onChange={e => upd('incoterms', e.target.value)}>
+              {['FOB', 'CIF', 'EXW', 'DAP', 'DDP', 'FCA'].map(v => <option key={v}>{v}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {/* 商品ライン */}
+        <div className="mt-4 border-t pt-4">
+          <h4 className="font-medium text-gray-700 mb-2">商品ライン追加</h4>
+          <div className="flex gap-2 flex-wrap items-end">
+            <div><label className="text-xs text-gray-500">商品</label><select className="border rounded p-2 mt-1 block" value={newItem.productId} onChange={e => setNewItem({ ...newItem, productId: e.target.value })}><option value="">選択</option>{products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
+            <div><label className="text-xs text-gray-500">数量</label><input type="number" className="border rounded p-2 mt-1 block w-24" value={newItem.qty} onChange={e => setNewItem({ ...newItem, qty: e.target.value })} placeholder="1000" /></div>
+            <div><label className="text-xs text-gray-500">単価（USD）</label><input type="number" step="0.01" className="border rounded p-2 mt-1 block w-28" value={newItem.unitPrice} onChange={e => setNewItem({ ...newItem, unitPrice: e.target.value })} placeholder="2.50" /></div>
+            <button onClick={addItem} className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 text-sm">追加</button>
+          </div>
+          {shipment.items.length > 0 && (
+            <div className="mt-3 space-y-1">
+              {shipment.items.map(i => (
+                <div key={i.id} className="text-sm bg-gray-50 px-3 py-1.5 rounded">
+                  <div className="flex items-center gap-3">
+                    <span className="flex-1 font-medium">{i.name}</span>
+                    <input type="number" className="border rounded p-1 w-20 text-xs" value={i.qty} onChange={e => updItem(i.id, 'qty', e.target.value)} title="数量" />
+                    <span className="text-gray-400 text-xs">{i.unit}</span>
+                    <span className="text-gray-300 text-xs w-14 text-right">{(i.qty * i.weight).toFixed(1)}kg</span>
+                    <input type="number" step="0.01" className="border rounded p-1 w-20 text-xs" value={i.unitPrice} onChange={e => updItem(i.id, 'unitPrice', e.target.value)} title="単価USD" />
+                    <span className="font-semibold w-20 text-right">${i.total.toFixed(2)}</span>
+                    <button onClick={() => rmItem(i.id)} className="text-red-400 hover:text-red-600">✕</button>
+                  </div>
+                  {docType === 'packing' && (
+                    <input className="mt-1 border rounded p-1 text-xs w-full" value={i.dims || ''} onChange={e => updItem(i.id, 'dims', e.target.value)} placeholder="梱包寸法（例: 30×20×15 cm）" />
+                  )}
+                </div>
+              ))}
+              <p className="text-right text-sm font-bold text-gray-700 pr-1">合計: ${totalAmt.toFixed(2)}</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="flex justify-between items-center mb-4 no-print">
+        <p className="text-xs text-gray-400">プレビュー</p>
+        <button onClick={() => {
+          const prev = document.title;
+          document.title = `${shipment.invoiceNo}_${docType.toUpperCase()}_${shipment.consigneeName || 'ORYZAE'}`;
+          window.print();
+          setTimeout(() => { document.title = prev; }, 1000);
+        }} className="bg-gray-900 text-white px-6 py-2 rounded-lg hover:bg-gray-700 text-sm">🖨 印刷 / PDF保存</button>
+      </div>
+
+      {docType === 'invoice' && <Invoice />}
+      {docType === 'packing' && <PackingList />}
+      {docType === 'coo'     && <COO />}
+      {docType === 'sli'     && <SLI />}
+    </div>
+  );
+}
+
+// ==================== BUYER MANAGEMENT ====================
+function BuyerManagement({ buyers, setBuyers }) {
+  const [editing, setEditing] = useState(null);
+  const emptyB = { name: '', company: '', country: 'USA', email: '', phone: '', address: '', status: 'prospect', channel: '', lastContactDate: '', nextActionDate: '', nextAction: '', notes: '', samples: [], dealHistory: [] };
+  const [form, setForm]     = useState(emptyB);
+  const [sampleForm, setSF] = useState({ date: '', products: '', tracking: '' });
+  const [filter, setFilter] = useState('all');
+  const [search, setSearch] = useState('');
+
+  const openNew  = () => { setEditing('new'); setForm(emptyB); };
+  const openEdit = (b) => { setEditing(b.id); setForm({ ...b }); };
+  const del      = (id) => { if (confirm('削除しますか？')) setBuyers(buyers.filter(b => b.id !== id)); };
+
+  const save = () => {
+    if (!form.name || !form.company) return alert('担当者名と会社名は必須です');
+    if (editing === 'new') setBuyers([...buyers, { ...form, id: Date.now().toString() }]);
+    else setBuyers(buyers.map(b => b.id === editing ? { ...form, id: editing } : b));
+    setEditing(null);
+  };
+
+  const addSample = () => {
+    if (!sampleForm.date || !sampleForm.products) return alert('送付日と商品を入力してください');
+    setForm(f => ({ ...f, samples: [...(f.samples || []), { ...sampleForm, id: Date.now().toString() }] }));
+    setSF({ date: '', products: '', tracking: '' });
+  };
+
+  const SC = { prospect: 'bg-gray-100 text-gray-700', sample_sent: 'bg-yellow-100 text-yellow-700', negotiating: 'bg-blue-100 text-blue-700', active: 'bg-green-100 text-green-700', inactive: 'bg-red-100 text-red-700' };
+  const SL = (id) => BUYER_STATUSES.find(s => s.id === id)?.label || id;
+
+  const isOverdue = (d) => d && new Date(d) < new Date();
+  const touchToday = (id) => { const today = new Date().toISOString().split('T')[0]; setBuyers(buyers.map(b => b.id === id ? { ...b, lastContactDate: today } : b)); };
+  const [expanded, setExpanded] = useState(new Set());
+  const toggleExpand = (id) => setExpanded(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const filtered = buyers
+    .filter(b => filter === 'all' || b.status === filter)
+    .filter(b => !search || b.company.toLowerCase().includes(search.toLowerCase()) || b.name.toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => {
+      const aOver = isOverdue(a.nextActionDate) ? 0 : 1;
+      const bOver = isOverdue(b.nextActionDate) ? 0 : 1;
+      if (aOver !== bOver) return aOver - bOver;
+      if (a.nextActionDate && b.nextActionDate) return a.nextActionDate.localeCompare(b.nextActionDate);
+      return 0;
+    });
+
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-xl font-bold text-gray-800">バイヤー管理台帳</h2>
+        <button onClick={openNew} className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 text-sm">+ バイヤー追加</button>
+      </div>
+
+      <div className="flex gap-2 mb-3 flex-wrap items-center">
+        {[{ id: 'all', label: `全員 (${buyers.length})` }, ...BUYER_STATUSES.map(s => ({ id: s.id, label: `${s.label} (${buyers.filter(b => b.status === s.id).length})` }))].map(f => (
+          <button key={f.id} onClick={() => setFilter(f.id)} className={`px-3 py-1.5 rounded-full text-sm ${filter === f.id ? 'bg-blue-600 text-white' : 'bg-white border text-gray-600 hover:bg-gray-50'}`}>{f.label}</button>
+        ))}
+        <input className="ml-auto border rounded-lg px-3 py-1.5 text-sm" value={search} onChange={e => setSearch(e.target.value)} placeholder="会社名・担当者で検索…" />
+      </div>
+
+      {/* 次アクション期限切れ警告 */}
+      {buyers.filter(b => isOverdue(b.nextActionDate)).length > 0 && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-sm text-red-700">
+          ⚠️ 次アクション期限切れ: {buyers.filter(b => isOverdue(b.nextActionDate)).map(b => b.company).join(', ')}
+        </div>
+      )}
+
+      {/* 編集モーダル */}
+      {editing && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto p-4">
+          <div className="bg-white rounded-xl p-6 w-full max-w-2xl shadow-2xl my-4">
+            <h3 className="font-bold text-lg mb-4">{editing === 'new' ? 'バイヤー追加' : 'バイヤー編集'}</h3>
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              {[['担当者名 *', 'name'], ['会社名 *', 'company'], ['国', 'country'], ['メール', 'email'], ['電話', 'phone'], ['チャネル（展示会等）', 'channel']].map(([lbl, k]) => (
+                <div key={k}><label className="text-sm text-gray-600">{lbl}</label><input className="w-full border rounded p-2 mt-1" value={form[k] || ''} onChange={e => setForm({ ...form, [k]: e.target.value })} /></div>
+              ))}
+              <div className="col-span-2">
+                <label className="text-sm text-gray-600">住所（書類作成に反映）</label>
+                <input className="w-full border rounded p-2 mt-1" value={form.address || ''} onChange={e => setForm({ ...form, address: e.target.value })} placeholder="123 Main St, Los Angeles, CA 90001" />
+              </div>
+              <div>
+                <label className="text-sm text-gray-600">ステータス</label>
+                <select className="w-full border rounded p-2 mt-1" value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>
+                  {BUYER_STATUSES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm text-gray-600">最終接触日</label>
+                <input type="date" className="w-full border rounded p-2 mt-1" value={form.lastContactDate || ''} onChange={e => setForm({ ...form, lastContactDate: e.target.value })} />
+              </div>
+              <div>
+                <label className="text-sm text-gray-600">次アクション日</label>
+                <input type="date" className="w-full border rounded p-2 mt-1" value={form.nextActionDate || ''} onChange={e => setForm({ ...form, nextActionDate: e.target.value })} />
+              </div>
+              <div>
+                <label className="text-sm text-gray-600">次アクション内容</label>
+                <input className="w-full border rounded p-2 mt-1" value={form.nextAction || ''} onChange={e => setForm({ ...form, nextAction: e.target.value })} placeholder="フォローアップメール、見積送付など" />
+              </div>
+              <div className="col-span-2">
+                <label className="text-sm text-gray-600">メモ・商談内容</label>
+                <textarea className="w-full border rounded p-2 mt-1" rows="3" value={form.notes || ''} onChange={e => setForm({ ...form, notes: e.target.value })} />
+              </div>
+            </div>
+
+            <div className="border-t pt-3 mb-4">
+              <h4 className="font-medium text-sm text-gray-700 mb-2">サンプル送付履歴</h4>
+              <div className="flex gap-2 mb-2 flex-wrap">
+                <input type="date" className="border rounded p-1.5 text-sm" value={sampleForm.date} onChange={e => setSF({ ...sampleForm, date: e.target.value })} />
+                <input className="border rounded p-1.5 text-sm flex-1 min-w-[100px]" placeholder="商品名" value={sampleForm.products} onChange={e => setSF({ ...sampleForm, products: e.target.value })} />
+                <input className="border rounded p-1.5 text-sm w-32" placeholder="追跡番号" value={sampleForm.tracking} onChange={e => setSF({ ...sampleForm, tracking: e.target.value })} />
+                <button onClick={addSample} className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm">追加</button>
+              </div>
+              {(form.samples || []).map(s => (
+                <div key={s.id} className="text-xs bg-gray-50 px-2 py-1 rounded flex gap-2">
+                  <span>{s.date}</span><span className="flex-1">{s.products}</span>{s.tracking && <span className="text-gray-400">{s.tracking}</span>}
+                </div>
+              ))}
+            </div>
+
+            <div className="border-t pt-3 mb-4">
+              <h4 className="font-medium text-sm text-gray-700 mb-2">商談履歴</h4>
+              <div className="flex gap-2 mb-2">
+                <input className="border rounded p-1.5 text-sm flex-1" placeholder="商談内容・進捗メモ（Enterで追加）"
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && e.target.value.trim()) {
+                      const entry = { id: Date.now().toString(), date: new Date().toISOString().split('T')[0], content: e.target.value.trim() };
+                      setForm(f => ({ ...f, dealHistory: [entry, ...(f.dealHistory || [])] }));
+                      e.target.value = '';
+                    }
+                  }} />
+              </div>
+              <div className="max-h-28 overflow-y-auto space-y-1">
+                {(form.dealHistory || []).map(d => (
+                  <div key={d.id} className="flex items-start gap-2 text-xs bg-gray-50 px-2 py-1 rounded">
+                    <span className="text-gray-400 flex-shrink-0">{d.date}</span>
+                    <span className="flex-1 text-gray-700">{d.content}</span>
+                    <button onClick={() => setForm(f => ({ ...f, dealHistory: f.dealHistory.filter(x => x.id !== d.id) }))} className="text-gray-300 hover:text-red-400">✕</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <button onClick={save} className="flex-1 bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700">保存</button>
+              <button onClick={() => setEditing(null)} className="flex-1 bg-gray-100 text-gray-700 py-2 rounded-lg hover:bg-gray-200">キャンセル</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {filtered.length === 0 ? (
+        <div className="bg-white rounded-xl p-10 text-center text-gray-400 shadow-sm">
+          {buyers.length === 0 ? '「+ バイヤー追加」から登録してください' : '条件に一致するバイヤーがいません'}
+        </div>
+      ) : (
+        <div className="grid gap-3">
+          {filtered.map(b => (
+            <div key={b.id} className={`bg-white rounded-xl p-4 shadow-sm hover:shadow-md transition-shadow ${isOverdue(b.nextActionDate) ? 'border-l-4 border-red-400' : ''}`}>
+              <div className="flex items-start justify-between">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <span className="font-semibold">{b.company}</span>
+                    <span className="text-gray-500 text-sm">{b.name}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${SC[b.status]}`}>{SL(b.status)}</span>
+                    {b.country && <span className="text-xs text-gray-400">🌍 {b.country}</span>}
+                  </div>
+                  <div className="flex gap-4 text-xs text-gray-500 flex-wrap mb-1">
+                    {b.email    && <span>✉️ {b.email}</span>}
+                    {b.phone    && <span>📞 {b.phone}</span>}
+                    {b.channel  && <span>🎪 {b.channel}</span>}
+                    {b.lastContactDate && <span>📅 最終接触: {b.lastContactDate}</span>}
+                    {b.address  && <span className="text-gray-400">📍 {b.address}</span>}
+                  </div>
+                  {b.nextActionDate && (
+                    <p className={`text-xs px-2 py-0.5 rounded inline-block ${isOverdue(b.nextActionDate) ? 'bg-red-100 text-red-700' : 'bg-yellow-50 text-yellow-700'}`}>
+                      ⏰ {b.nextActionDate} — {b.nextAction || 'アクション未設定'}
+                    </p>
+                  )}
+                  {(b.notes || (b.samples || []).length > 0 || (b.dealHistory || []).length > 0) && (
+                    <button onClick={() => toggleExpand(b.id)} className="text-xs text-gray-400 hover:text-blue-500 mt-1 text-left">
+                      {expanded.has(b.id) ? '▲ 閉じる' : `▼ 詳細（${[b.notes ? 'メモあり' : '', (b.samples||[]).length > 0 ? `サンプル${b.samples.length}回` : '', (b.dealHistory||[]).length > 0 ? `商談${b.dealHistory.length}件` : ''].filter(Boolean).join('・')}）`}
+                    </button>
+                  )}
+                  {expanded.has(b.id) && (
+                    <div className="mt-1.5 space-y-1.5">
+                      {b.notes && <p className="text-xs text-gray-600 bg-gray-50 px-2 py-1 rounded">{b.notes}</p>}
+                      {(b.samples || []).map(s => (
+                        <p key={s.id} className="text-xs text-blue-600">📦 {s.date} — {s.products}{s.tracking ? ` (${s.tracking})` : ''}</p>
+                      ))}
+                      {(b.dealHistory || []).length > 0 && (
+                        <div className="border-l-2 border-gray-200 pl-2 space-y-1 mt-1">
+                          {b.dealHistory.map(d => (
+                            <div key={d.id} className="text-xs flex gap-2">
+                              <span className="text-gray-400 flex-shrink-0">{d.date}</span>
+                              <span className="text-gray-700">{d.content}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div className="flex gap-2 ml-4 flex-shrink-0 items-center">
+                  <button onClick={() => touchToday(b.id)} className="text-xs text-green-600 hover:text-green-800 border border-green-200 rounded px-2 py-0.5 hover:bg-green-50">今日接触</button>
+                  <button onClick={() => openEdit(b)} className="text-blue-600 hover:text-blue-800 text-sm">編集</button>
+                  <button onClick={() => del(b.id)} className="text-red-500 hover:text-red-700 text-sm">削除</button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==================== FDA CHECKLIST ====================
+function FDAChecklist({ fdaStatus, setFdaStatus, settings }) {
+  const [notes, setNotes] = useState(() => ls.get('oryzae_fda_notes', {}));
+  const [regNo, setRegNo] = useState(() => ls.get('oryzae_fda_regno', ''));
+  const [editingNote, setEditingNote] = useState(null);
+
+  useEffect(() => ls.set('oryzae_fda_notes', notes), [notes]);
+  useEffect(() => ls.set('oryzae_fda_regno', regNo), [regNo]);
+
+  const toggle = (id) => setFdaStatus(s => ({ ...s, [id]: s[id] === 'done' ? 'pending' : s[id] === 'pending' ? 'na' : 'done' }));
+  const getSt   = (id) => fdaStatus[id] || 'pending';
+
+  const SS = { done: 'bg-green-100 text-green-800', pending: 'bg-gray-100 text-gray-600', na: 'bg-gray-50 text-gray-400' };
+  const SL = { done: '✓ 完了', pending: '未対応', na: 'N/A' };
+
+  const categories = [...new Set(FDA_CHECKLIST.map(x => x.category))];
+  const doneCount  = FDA_CHECKLIST.filter(x => getSt(x.id) === 'done').length;
+  const critLeft   = FDA_CHECKLIST.filter(x => x.critical && getSt(x.id) !== 'done').length;
+
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-xl font-bold text-gray-800">FDA対応チェックリスト（対US）</h2>
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-gray-500">{doneCount} / {FDA_CHECKLIST.length} 完了</span>
+          <button onClick={() => window.print()} className="no-print bg-gray-800 text-white px-3 py-1.5 rounded-lg text-sm hover:bg-gray-700">🖨 印刷</button>
+        </div>
+      </div>
+
+      {/* 進捗 + 施設登録番号 */}
+      <div className="bg-white rounded-xl p-4 mb-4 shadow-sm">
+        <div className="flex items-center gap-3 mb-2">
+          <div className="flex-1 bg-gray-200 rounded-full h-2.5">
+            <div className="bg-green-500 h-2.5 rounded-full transition-all" style={{ width: `${(doneCount / FDA_CHECKLIST.length) * 100}%` }}></div>
+          </div>
+          <span className="text-sm font-medium">{Math.round((doneCount / FDA_CHECKLIST.length) * 100)}%</span>
+        </div>
+        {critLeft > 0
+          ? <p className="text-sm text-red-600 font-medium">⚠️ 必須項目 {critLeft} 件が未対応</p>
+          : <p className="text-sm text-green-600 font-medium">✓ 必須項目はすべて対応済み</p>}
+        <p className="text-xs text-gray-400 mt-1">クリックで 未対応 → 完了 → N/A と切り替え</p>
+
+        <div className="mt-3 border-t pt-3 flex items-center gap-3">
+          <label className="text-sm text-gray-600 flex-shrink-0">FDA施設登録番号</label>
+          <input className="border rounded p-1.5 text-sm font-mono flex-1 max-w-xs" value={regNo} onChange={e => setRegNo(e.target.value)} placeholder="例: 12345678901" />
+          <p className="text-xs text-gray-400">登録後はここに記録</p>
+        </div>
+      </div>
+
+      {categories.map(cat => (
+        <div key={cat} className="bg-white rounded-xl shadow-sm mb-3 overflow-hidden">
+          <div className="bg-gray-800 text-white px-4 py-2.5 text-sm font-semibold">{cat}</div>
+          <div className="divide-y divide-gray-100">
+            {FDA_CHECKLIST.filter(x => x.category === cat).map(item => {
+              const st = getSt(item.id);
+              return (
+                <div key={item.id} className={`p-4 ${st === 'na' ? 'opacity-50' : ''}`}>
+                  <div className="flex gap-3 items-start cursor-pointer" onClick={() => toggle(item.id)}>
+                    <button className={`flex-shrink-0 mt-0.5 px-2.5 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${SS[st]}`}>{SL[st]}</button>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium text-gray-800">{item.title}</p>
+                        {item.critical && <span className="text-xs bg-red-100 text-red-600 px-1.5 py-0.5 rounded font-medium">必須</span>}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5">{item.desc}</p>
+                      {item.url && <a href={item.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-xs text-blue-500 hover:underline mt-0.5 inline-block">FDA公式ページ →</a>}
+                    </div>
+                  </div>
+                  {/* 担当者メモ */}
+                  {editingNote === item.id ? (
+                    <div className="mt-2 flex gap-2" onClick={e => e.stopPropagation()}>
+                      <input autoFocus className="flex-1 border rounded p-1.5 text-xs" value={notes[item.id] || ''} onChange={e => setNotes(n => ({ ...n, [item.id]: e.target.value }))} placeholder="担当者メモ…" onKeyDown={e => e.key === 'Enter' && setEditingNote(null)} />
+                      <button className="text-xs text-gray-500 hover:text-gray-700" onClick={() => setEditingNote(null)}>保存</button>
+                    </div>
+                  ) : (
+                    <div className="mt-1.5 flex items-center gap-1">
+                      {notes[item.id] && <span className="text-xs text-gray-500 bg-yellow-50 px-2 py-0.5 rounded">{notes[item.id]}</span>}
+                      <button className="text-xs text-gray-400 hover:text-blue-500" onClick={() => setEditingNote(item.id)}>{notes[item.id] ? '編集' : '+ メモ'}</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ==================== TARIFF SEARCH ====================
+function TariffSearch({ settings, products }) {
+  const [hsCode, setHs] = useState('');
+  const [result, setRes]= useState(null);
+  const [loading, setL] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  const KNOWN = {
+    '2202':    { rate: '0%',           desc: 'Waters and non-alcoholic beverages',             notes: '日本産飲料の大半はMFN 0%。成分・アルコール含有量で変わる可能性あり。' },
+    '2202.99': { rate: '0%',           desc: 'Other non-alcoholic beverages (incl. fermented)', notes: 'KOJIPOP・甘酒（ノンアル）が該当する可能性。実際の10桁コードで要確認。' },
+    '2206':    { rate: '0.264¢/liter', desc: 'Other fermented beverages',                      notes: '甘酒にアルコールが含まれる場合こちら。TTB管轄になる。' },
+    '2206.00': { rate: '0.264¢/liter', desc: 'Other fermented beverages (cider, mead, sake)',  notes: '甘酒（アルコール有）はこちらの可能性。FDA TTB登録も別途必要。' },
+    '2106':    { rate: '0〜6.4%',      desc: 'Food preparations not elsewhere specified',       notes: '麹甘味料など加工食品。サブ分類で税率が変わる。' },
+    '2106.90': { rate: '6.4% or free', desc: 'Other food preparations',                        notes: '麹甘味料・麹エキス系。FDAの食品施設登録が必要。' },
+    '1904':    { rate: '0%',           desc: 'Prepared cereals',                                notes: 'グラノーラ・シリアル系。多くは0%。' },
+    '1904.10': { rate: '0%',           desc: 'Prepared cereals obtained by swelling/roasting',  notes: 'グラノーラ。MFN 0%の可能性高い。' },
+  };
+
+  const QUICK = products.filter(p => p.hsCode).map(p => ({ name: p.name, hs: p.hsCode, e: '📦' }));
+
+  const doSearch = useCallback((code) => {
+    const c = (code || hsCode).trim();
+    if (!c) return;
+    setHs(c); setL(true); setRes(null);
+    setTimeout(() => {
+      const known = KNOWN[c] || KNOWN[c.split('.').slice(0, 2).join('.')] || KNOWN[c.split('.')[0]];
+      setRes(known ? { data: known } : { notfound: true });
+      setL(false);
+    }, 300);
+  }, [hsCode]);
+
+  const sendSlack = async () => {
+    if (!settings.slackWebhook) return alert('設定タブでSlack Webhook URLを入力してください');
+    try {
+      await fetch(settings.slackWebhook, { method: 'POST', body: JSON.stringify({ text: `*ORYZAE 関税情報*\n\nHSコード: \`${hsCode}\`\n関税率: *${result.data.rate}*\n説明: ${result.data.desc}\n備考: ${result.data.notes}\n\n_${new Date().toLocaleString('ja-JP')} 時点_` }) });
+      setSent(true); setTimeout(() => setSent(false), 3000);
+    } catch { alert('Slack送信に失敗しました'); }
+  };
+
+  return (
+    <div>
+      <h2 className="text-xl font-bold text-gray-800 mb-4">関税情報（対US）</h2>
+
+      <div className="bg-white rounded-xl p-4 shadow-sm mb-4">
+        <h3 className="font-semibold text-gray-700 mb-2 text-sm">ORYZAE商品 クイック参照（クリックで即検索）</h3>
+        <div className="flex flex-wrap gap-2">
+          {QUICK.map(p => (
+            <button key={p.name} onClick={() => doSearch(p.hs)}
+              className="bg-gray-50 hover:bg-blue-50 border text-gray-700 px-3 py-1.5 rounded-lg text-sm flex items-center gap-1.5 transition-colors">
+              {p.e} {p.name} <span className="font-mono text-blue-600 text-xs">({p.hs})</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl p-4 shadow-sm mb-4">
+        <div className="flex gap-2">
+          <input className="flex-1 border rounded-lg p-2 font-mono" value={hsCode} onChange={e => setHs(e.target.value)} onKeyDown={e => e.key === 'Enter' && doSearch()} placeholder="HSコードを入力（例: 2202.99）" />
+          <button onClick={() => doSearch()} disabled={loading} className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50">{loading ? '検索中…' : '検索'}</button>
+        </div>
+      </div>
+
+      {result && (
+        <div className="bg-white rounded-xl p-5 shadow-sm mb-4">
+          {result.notfound ? (
+            <div className="text-center py-4">
+              <p className="text-4xl mb-2">🔍</p><p className="text-gray-500 mb-3">データが見つかりませんでした</p>
+              <a href="https://hts.usitc.gov" target="_blank" rel="noreferrer" className="text-blue-600 hover:underline text-sm">USITC HTS で直接検索する →</a>
+            </div>
+          ) : (
+            <div>
+              <p className="font-mono font-bold text-lg text-gray-800 mb-1">{hsCode}</p>
+              <p className="text-sm text-gray-600 mb-4">{result.data.desc}</p>
+              <div className="grid grid-cols-3 gap-3 mb-4">
+                <div className="bg-blue-50 rounded-lg p-3 text-center"><p className="text-xs text-gray-500 mb-1">MFN関税率（日本→US）</p><p className="text-2xl font-bold text-blue-700">{result.data.rate}</p></div>
+                <div className="bg-gray-50 rounded-lg p-3 text-center"><p className="text-xs text-gray-500 mb-1">原産国</p><p className="text-sm font-medium">Japan 🇯🇵</p></div>
+                <div className="bg-green-50 rounded-lg p-3 text-center"><p className="text-xs text-gray-500 mb-1">適用</p><p className="text-sm font-medium">MFN（最恵国）</p></div>
+              </div>
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 mb-4"><span className="font-semibold">備考: </span>{result.data.notes}</div>
+              <div className="flex gap-3 flex-wrap">
+                <a href="https://hts.usitc.gov" target="_blank" rel="noreferrer" className="text-blue-600 hover:underline text-sm">USITC HTSで詳細確認 →</a>
+                <button onClick={sendSlack} className={`text-sm px-4 py-1.5 rounded-lg ${sent ? 'bg-green-100 text-green-700' : 'bg-purple-100 text-purple-700 hover:bg-purple-200'}`}>{sent ? '✓ Slack送信済み' : '📨 Slackに送信'}</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+        <p className="font-semibold mb-2">⚠️ 重要注意</p>
+        <ul className="space-y-1 list-disc list-inside">
+          <li>輸出申告には<strong>10桁のHTSコード</strong>が必要です（このツールは暫定値）</li>
+          <li>食品輸出には<strong>FDA食品施設登録</strong>および<strong>FSVP要件</strong>への対応が必要です</li>
+          <li>最終的な税率・分類はCBPまたは専門家に確認してください</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+// ==================== SETTINGS ====================
+function Settings({ settings, setSettings, products, buyers, fdaStatus, shipHistory, schedules }) {
+  const [form, setForm]   = useState({ ...settings });
+  const [saved, setSaved] = useState(false);
+  const [section, setSection] = useState('company');
+  const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const save = () => { setSettings(form); setSaved(true); setTimeout(() => setSaved(false), 2000); };
+
+  const exportAll = () => {
+    const data = { version: '2.2', exportedAt: new Date().toISOString(), settings, products, buyers, fdaStatus, shipHistory, schedules };
+    const url  = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+    Object.assign(document.createElement('a'), { href: url, download: `oryzae-export-ops-${new Date().toISOString().split('T')[0]}.json` }).click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importAll = (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const d = JSON.parse(ev.target.result);
+        if (d.settings)    { setSettings(d.settings); setForm(d.settings); ls.set('oryzae_settings', d.settings); }
+        if (d.products)    ls.set('oryzae_products', d.products);
+        if (d.buyers)      ls.set('oryzae_buyers', d.buyers);
+        if (d.fdaStatus)   ls.set('oryzae_fda', d.fdaStatus);
+        if (d.shipHistory) ls.set('oryzae_shipments', d.shipHistory);
+        if (d.schedules)   ls.set('oryzae_schedules', d.schedules);
+        alert('インポート完了。ページをリロードしてください。');
+      } catch { alert('ファイルの読み込みに失敗しました'); }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  const SECTIONS = [{ id: 'company', label: '会社情報' }, { id: 'pricing', label: '価格計算' }, { id: 'slack', label: 'Slack' }, { id: 'data', label: 'データ管理' }, { id: 'deploy', label: '社内共有' }];
+
+  return (
+    <div>
+      <h2 className="text-xl font-bold text-gray-800 mb-4">設定</h2>
+
+      <div className="flex gap-1 bg-gray-100 rounded-lg p-1 mb-5 w-fit">
+        {SECTIONS.map(s => (
+          <button key={s.id} onClick={() => setSection(s.id)} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${section === s.id ? 'bg-white shadow text-gray-800' : 'text-gray-500 hover:text-gray-700'}`}>{s.label}</button>
+        ))}
+      </div>
+
+      {section === 'company' && (
+        <div className="bg-white rounded-xl p-4 shadow-sm">
+          <h3 className="font-semibold text-gray-700 mb-3">会社情報（書類に反映）</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {[['会社名（日本語）', 'companyNameJa'], ['Company Name (English)', 'companyNameEn'], ['Email', 'companyEmail'], ['Phone', 'companyPhone']].map(([lbl, k]) => (
+              <div key={k}><label className="text-sm text-gray-600">{lbl}</label><input className="w-full border rounded p-2 mt-1" value={form[k] || ''} onChange={e => upd(k, e.target.value)} /></div>
+            ))}
+            <div className="md:col-span-2">
+              <label className="text-sm text-gray-600">Address (English — 書類に記載）</label>
+              <textarea className="w-full border rounded p-2 mt-1 text-sm" rows="2" value={form.companyAddressEn || ''} onChange={e => upd('companyAddressEn', e.target.value)} placeholder="2-1-1 Example, Chuo-ku, Tokyo 104-0061, Japan" />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {section === 'pricing' && (
+        <div className="bg-white rounded-xl p-4 shadow-sm">
+          <h3 className="font-semibold text-gray-700 mb-3">価格計算 デフォルト値</h3>
+          {(() => { const c = getCachedRate(); return c
+            ? <div className="mb-3 px-3 py-2 bg-blue-50 rounded-lg text-xs text-blue-700">現在の為替レート（キャッシュ）: <span className="font-mono font-semibold">1円 = ${c.rate.toFixed(6)}</span>（{c.date}）</div>
+            : <div className="mb-3 px-3 py-2 bg-gray-50 rounded-lg text-xs text-gray-400">為替レートは価格計算タブで取得してください</div>; })()}
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {[['海上運賃（USD/kg）', 'freightRate', 0.1], ['保険料率（%）', 'insuranceRate', 0.01], ['国内物流費（円/便）', 'domesticLogistics', 100], ['卸値マークアップ（×）', 'wholesaleMarkup', 0.1], ['小売マークアップ（×）', 'retailMarkup', 0.1]].map(([lbl, k, step]) => (
+              <div key={k}><label className="text-sm text-gray-600">{lbl}</label><input type="number" step={step} className="w-full border rounded p-2 mt-1" value={form[k]} onChange={e => upd(k, Number(e.target.value))} /></div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {section === 'slack' && (
+        <div className="bg-white rounded-xl p-4 shadow-sm">
+          <h3 className="font-semibold text-gray-700 mb-1">Slack Webhook</h3>
+          <p className="text-xs text-gray-400 mb-3">「関税情報」タブから関税情報をSlackに送信するためのWebhook URL</p>
+          <input className="w-full border rounded p-2 font-mono text-sm" value={form.slackWebhook || ''} onChange={e => upd('slackWebhook', e.target.value)} placeholder="https://hooks.slack.com/services/..." />
+          <p className="text-xs text-gray-400 mt-1">取得方法: Slack → Apps → Incoming Webhooks → Add New Webhook</p>
+          <div className="mt-4 border-t pt-4">
+            <p className="text-sm font-medium text-gray-700 mb-2">現在のステータスをSlackに送信</p>
+            <p className="text-xs text-gray-400 mb-3">FDA未対応・バイヤー期限切れ・為替レートをまとめて通知</p>
+            <button onClick={async () => {
+              const wh = form.slackWebhook || settings.slackWebhook;
+              if (!wh) return alert('Webhook URLを入力して保存してください');
+              const c = getCachedRate();
+              const overdueB = buyers.filter(b => b.nextActionDate && new Date(b.nextActionDate) < new Date());
+              const fdaCrit = FDA_CHECKLIST.filter(x => x.critical && (fdaStatus[x.id] || 'pending') !== 'done');
+              const text = [
+                '*ORYZAE Export Ops — ステータス通知*',
+                `📅 ${new Date().toLocaleDateString('ja-JP')}`,
+                c ? `💱 為替レート: 1円 = $${c.rate.toFixed(6)}（${c.date}）` : '💱 為替レート: 未取得',
+                `🏥 FDA必須未対応: ${fdaCrit.length}件${fdaCrit.length > 0 ? ' — ' + fdaCrit.slice(0, 3).map(x => x.title).join('、') : ' ✓'}`,
+                `🤝 バイヤー期限切れ: ${overdueB.length}件${overdueB.length > 0 ? ' — ' + overdueB.map(b => b.company).join('、') : ' ✓'}`,
+                `📦 登録商品: ${products.length}件 ／ バイヤー: ${buyers.length}件`,
+              ].join('\n');
+              try {
+                await fetch(wh, { method: 'POST', body: JSON.stringify({ text }) });
+                alert('Slackに送信しました');
+              } catch { alert('Slack送信に失敗しました'); }
+            }} className="w-full bg-purple-600 text-white py-2 rounded-lg hover:bg-purple-700 text-sm font-medium">
+              📨 ステータスをSlackに送信
+            </button>
+          </div>
+        </div>
+      )}
+
+      {section === 'data' && (
+        <div className="bg-white rounded-xl p-4 shadow-sm">
+          <h3 className="font-semibold text-gray-700 mb-1">データ管理</h3>
+          <p className="text-xs text-gray-400 mb-3">全データ（商品・バイヤー・書類履歴・設定）をJSONでバックアップ/復元</p>
+          <div className="flex gap-3 mb-4">
+            <button onClick={exportAll} className="flex-1 bg-gray-800 text-white py-2 rounded-lg hover:bg-gray-700 text-sm">エクスポート（JSON）</button>
+            <label className="flex-1 bg-white border-2 border-dashed border-gray-300 text-gray-600 py-2 rounded-lg text-sm text-center cursor-pointer hover:bg-gray-50">
+              インポート（JSON）<input type="file" accept=".json" className="hidden" onChange={importAll} />
+            </label>
+          </div>
+          <div className="grid grid-cols-5 gap-2 text-center text-xs text-gray-400 mb-4">
+            {[['商品', products.length], ['バイヤー', buyers.length], ['書類履歴', shipHistory.length], ['船積', schedules.length], ['FDA完了', `${Object.values(fdaStatus).filter(v => v === 'done').length}/${FDA_CHECKLIST.length}`]].map(([lbl, val]) => (
+              <div key={lbl} className="bg-gray-50 rounded p-2"><p className="text-lg font-bold text-gray-700">{val}</p><p>{lbl}</p></div>
+            ))}
+          </div>
+          <div className="border-t pt-3">
+            <p className="text-xs text-red-400 mb-2">⚠️ 危険操作 — 全データを削除して初期状態に戻します</p>
+            <button onClick={() => {
+              if (confirm('全データをリセットしますか？\nこの操作は取り消せません。')) {
+                Object.keys(localStorage).filter(k => k.startsWith('oryzae')).forEach(k => localStorage.removeItem(k));
+                window.location.reload();
+              }
+            }} className="w-full bg-red-600 text-white py-2 rounded-lg hover:bg-red-700 text-sm font-medium">
+              全データをリセット（初期化）
+            </button>
+          </div>
+        </div>
+      )}
+
+      {section === 'deploy' && (
+        <div className="bg-white rounded-xl p-4 shadow-sm space-y-4">
+          <h3 className="font-semibold text-gray-700">社内共有・デプロイ</h3>
+          <p className="text-xs text-gray-500">このツールはHTMLファイル1枚で完結しています。Netlifyに無料でデプロイするだけで社内全員がURLからアクセスできます。</p>
+
+          <div className="bg-blue-50 rounded-lg p-4 text-sm">
+            <p className="font-semibold text-blue-800 mb-2">🚀 Netlify デプロイ手順（3分）</p>
+            <ol className="space-y-1.5 text-blue-700 text-xs list-decimal list-inside">
+              <li><a href="https://app.netlify.com" target="_blank" rel="noreferrer" className="underline hover:text-blue-900">app.netlify.com</a> にGoogleアカウントでログイン</li>
+              <li>「Sites」→「Add new site」→「Deploy manually」</li>
+              <li>index.html をドラッグ＆ドロップ</li>
+              <li>生成されたURL（例: <span className="font-mono">https://xxxxx.netlify.app</span>）を社内に共有</li>
+            </ol>
+          </div>
+
+          <div className="bg-amber-50 rounded-lg p-3 text-xs text-amber-700">
+            <p className="font-semibold mb-1">⚠️ データについて</p>
+            <p>各ユーザーのデータは<strong>それぞれのブラウザ</strong>に保存されます（共有データベースなし）。<br />「データ管理」タブのJSONエクスポートで担当者間のデータ共有が可能です。</p>
+          </div>
+
+          <div className="border-t pt-3">
+            <p className="text-sm font-medium text-gray-700 mb-2">現在のデータを共有する</p>
+            <p className="text-xs text-gray-400 mb-2">JSONをエクスポートしてSlack・Driveで送付 → 受け取り側は「データ管理」でインポート</p>
+            <button onClick={() => {
+              const data = { version: '2.2', exportedAt: new Date().toISOString(), settings, products, buyers, fdaStatus, shipHistory, schedules };
+              const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+              Object.assign(document.createElement('a'), { href: url, download: `oryzae-share-${new Date().toISOString().split('T')[0]}.json` }).click();
+              URL.revokeObjectURL(url);
+            }} className="w-full bg-gray-800 text-white py-2 rounded-lg hover:bg-gray-700 text-sm">
+              📤 データをエクスポートして共有
+            </button>
+          </div>
+        </div>
+      )}
+
+      {section !== 'data' && section !== 'deploy' && (
+        <button onClick={save} className={`w-full mt-4 py-3 rounded-xl font-semibold text-white transition-colors ${saved ? 'bg-green-600' : 'bg-blue-600 hover:bg-blue-700'}`}>
+          {saved ? '✓ 保存しました' : '設定を保存'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ==================== SHIP SCHEDULE ====================
+function ShipSchedule({ schedules, setSchedules }) {
+  const STATUS = [
+    { id: 'booking', label: '予約中',  cls: 'bg-yellow-100 text-yellow-700' },
+    { id: 'loaded',  label: '積込済',  cls: 'bg-blue-100 text-blue-700' },
+    { id: 'transit', label: '航行中',  cls: 'bg-indigo-100 text-indigo-700' },
+    { id: 'arrived', label: '入港済',  cls: 'bg-green-100 text-green-700' },
+  ];
+  const stCls = (id) => STATUS.find(s => s.id === id)?.cls || 'bg-gray-100 text-gray-600';
+  const stLbl = (id) => STATUS.find(s => s.id === id)?.label || id;
+
+  const empty = { vesselName: '', bookingNo: '', invoiceNo: '', portLoading: 'Tokyo, Japan', portDischarge: 'Los Angeles, CA, USA', departureDate: '', arrivalDate: '', status: 'booking', notes: '' };
+  const [editing, setEditing] = useState(null);
+  const [form, setForm]       = useState(empty);
+
+  const openNew  = () => { setEditing('new'); setForm(empty); };
+  const openEdit = (s) => { setEditing(s.id); setForm({ ...s }); };
+  const del      = (id) => { if (confirm('削除しますか？')) setSchedules(schedules.filter(s => s.id !== id)); };
+  const save = () => {
+    if (!form.departureDate) return alert('出港予定日は必須です');
+    if (editing === 'new') setSchedules([...schedules, { ...form, id: Date.now().toString() }]);
+    else setSchedules(schedules.map(s => s.id === editing ? { ...form, id: editing } : s));
+    setEditing(null);
+  };
+  const nextStatus = (id) => {
+    const order = ['booking', 'loaded', 'transit', 'arrived'];
+    setSchedules(schedules.map(s => {
+      if (s.id !== id) return s;
+      const i = order.indexOf(s.status);
+      return { ...s, status: order[Math.min(i + 1, order.length - 1)] };
+    }));
+  };
+
+  const today  = new Date().toISOString().split('T')[0];
+  const isLate = (s) => s.status !== 'arrived' && s.arrivalDate && s.arrivalDate < today;
+  const sorted = [...schedules].sort((a, b) => (a.departureDate || '').localeCompare(b.departureDate || ''));
+  const active = sorted.filter(s => s.status !== 'arrived');
+  const done   = sorted.filter(s => s.status === 'arrived');
+
+  const Group = ({ title, items }) => items.length === 0 ? null : (
+    <div className="mb-4">
+      <p className="text-xs font-semibold text-gray-400 uppercase mb-2">{title}</p>
+      <div className="space-y-2">
+        {items.map(s => (
+          <div key={s.id} className={`bg-white rounded-xl p-4 shadow-sm ${isLate(s) ? 'border-l-4 border-red-400' : ''}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
+                  <span className="font-semibold">🚢 {s.vesselName || '（船名未設定）'}</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${stCls(s.status)}`}>{stLbl(s.status)}</span>
+                  {isLate(s) && <span className="text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full">入港遅延</span>}
+                </div>
+                <div className="flex gap-4 text-xs text-gray-500 flex-wrap">
+                  <span>📍 {s.portLoading} → {s.portDischarge}</span>
+                  {s.departureDate && <span>🛫 出港: {s.departureDate}</span>}
+                  {s.arrivalDate   && <span>🛬 入港予定: {s.arrivalDate}</span>}
+                  {s.bookingNo     && <span>📋 {s.bookingNo}</span>}
+                  {s.invoiceNo     && <span>📄 {s.invoiceNo}</span>}
+                </div>
+                {s.notes && <p className="text-xs text-gray-400 mt-1">{s.notes}</p>}
+              </div>
+              <div className="flex gap-2 flex-shrink-0 items-center">
+                {s.status !== 'arrived' && (
+                  <button onClick={() => nextStatus(s.id)} className="text-xs bg-gray-100 text-gray-600 hover:bg-gray-200 px-2 py-1 rounded">次へ →</button>
+                )}
+                <button onClick={() => openEdit(s)} className="text-blue-600 hover:text-blue-800 text-sm">編集</button>
+                <button onClick={() => del(s.id)} className="text-red-500 hover:text-red-700 text-sm">削除</button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-xl font-bold text-gray-800">船積みスケジュール</h2>
+        <button onClick={openNew} className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 text-sm">+ 追加</button>
+      </div>
+
+      {editing && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl p-6 w-full max-w-lg shadow-2xl">
+            <h3 className="font-bold text-lg mb-4">{editing === 'new' ? 'スケジュール追加' : 'スケジュール編集'}</h3>
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              {[['船名', 'vesselName'], ['予約番号', 'bookingNo'], ['インボイス番号', 'invoiceNo']].map(([lbl, k]) => (
+                <div key={k}><label className="text-sm text-gray-600">{lbl}</label><input className="w-full border rounded p-2 mt-1" value={form[k] || ''} onChange={e => setForm({ ...form, [k]: e.target.value })} /></div>
+              ))}
+              <div>
+                <label className="text-sm text-gray-600">ステータス</label>
+                <select className="w-full border rounded p-2 mt-1" value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>
+                  {STATUS.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+                </select>
+              </div>
+              {[['出港地', 'portLoading'], ['入港地', 'portDischarge']].map(([lbl, k]) => (
+                <div key={k}><label className="text-sm text-gray-600">{lbl}</label><input className="w-full border rounded p-2 mt-1" value={form[k] || ''} onChange={e => setForm({ ...form, [k]: e.target.value })} /></div>
+              ))}
+              {[['出港予定日 *', 'departureDate'], ['入港予定日', 'arrivalDate']].map(([lbl, k]) => (
+                <div key={k}><label className="text-sm text-gray-600">{lbl}</label><input type="date" className="w-full border rounded p-2 mt-1" value={form[k] || ''} onChange={e => setForm({ ...form, [k]: e.target.value })} /></div>
+              ))}
+              <div className="col-span-2"><label className="text-sm text-gray-600">備考</label><input className="w-full border rounded p-2 mt-1" value={form.notes || ''} onChange={e => setForm({ ...form, notes: e.target.value })} /></div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={save} className="flex-1 bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700">保存</button>
+              <button onClick={() => setEditing(null)} className="flex-1 bg-gray-100 text-gray-700 py-2 rounded-lg hover:bg-gray-200">キャンセル</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {schedules.length === 0
+        ? <div className="bg-white rounded-xl p-10 text-center text-gray-400 shadow-sm">スケジュールがありません</div>
+        : <><Group title="進行中" items={active} /><Group title="入港済" items={done} /></>
+      }
+    </div>
+  );
+}
+
+// ==================== APP ====================
+function App() {
+  const [tab,         setTab]    = useState('products');
+  const [products,  setProducts] = useState(() => ls.get('oryzae_products',  DEFAULT_PRODUCTS));
+  const [settings,  setSettings] = useState(() => ls.get('oryzae_settings',  DEFAULT_SETTINGS));
+  const [buyers,    setBuyers]   = useState(() => ls.get('oryzae_buyers',    []));
+  const [fdaStatus, setFda]      = useState(() => ls.get('oryzae_fda',       {}));
+  const [shipHistory, setShipH]  = useState(() => ls.get('oryzae_shipments', []));
+  const [pendingDocItem, setPending] = useState(null);
+  const [pendingPricePid, setPricePid] = useState(null);
+  const [schedules, setSchedules] = useState(() => ls.get('oryzae_schedules', []));
+
+  useEffect(() => ls.set('oryzae_products',  products),  [products]);
+  useEffect(() => ls.set('oryzae_settings',  settings),  [settings]);
+  useEffect(() => ls.set('oryzae_buyers',    buyers),    [buyers]);
+  useEffect(() => ls.set('oryzae_fda',       fdaStatus), [fdaStatus]);
+  useEffect(() => ls.set('oryzae_shipments', shipHistory), [shipHistory]);
+  useEffect(() => ls.set('oryzae_schedules', schedules),   [schedules]);
+
+  // 価格計算 → 書類作成へ連携
+  const handleSendToDoc = (product, result, qty) => {
+    setPending({ product, result, qty: qty || 1000 });
+    setTab('documents');
+  };
+
+  // 製品マスタ → 価格計算へ連携
+  const handleGoToPricing = (pid) => { setPricePid(pid); setTab('pricing'); };
+
+  const fdaCritLeft = FDA_CHECKLIST.filter(x => x.critical && (fdaStatus[x.id] || 'pending') !== 'done').length;
+  const overdueCount = buyers.filter(b => b.nextActionDate && new Date(b.nextActionDate) < new Date()).length;
+
+  return (
+    <div className="min-h-screen bg-gray-100">
+      <header className="bg-gray-900 text-white px-4 py-3 no-print">
+        <div className="max-w-6xl mx-auto flex items-center justify-between">
+          <div>
+            <h1 className="font-bold text-lg tracking-wide">ORYZAE Export Ops</h1>
+            <p className="text-gray-400 text-xs mt-0.5">海外事業部 輸出管理ツール</p>
+          </div>
+          <p className="text-gray-400 text-xs">{new Date().toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+        </div>
+      </header>
+
+      <nav className="bg-white border-b shadow-sm no-print sticky top-0 z-40">
+        <div className="max-w-6xl mx-auto flex overflow-x-auto hide-scrollbar">
+          {TABS.map(t => (
+            <button key={t.id} onClick={() => setTab(t.id)}
+              className={`flex items-center gap-1.5 px-4 py-3.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors relative
+                ${tab === t.id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}>
+              <span>{t.icon}</span>{t.label}
+              {t.id === 'fda'    && fdaCritLeft   > 0 && <span className="absolute top-2 right-0.5 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold">{fdaCritLeft}</span>}
+              {t.id === 'buyers' && overdueCount  > 0 && <span className="absolute top-2 right-0.5 bg-orange-400 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold">{overdueCount}</span>}
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      <main className="max-w-6xl mx-auto p-4 md:p-6">
+        {tab === 'products'  && <ProductMaster   products={products}    setProducts={setProducts} onGoToPricing={handleGoToPricing} />}
+        {tab === 'pricing'   && <PriceCalculator products={products}    settings={settings} onSendToDoc={handleSendToDoc} pendingPricePid={pendingPricePid} clearPendingPrice={() => setPricePid(null)} />}
+        {tab === 'documents' && <DocumentCreator products={products}    settings={settings} buyers={buyers} shipHistory={shipHistory} setShipHistory={setShipH} pendingDocItem={pendingDocItem} clearPendingDoc={() => setPending(null)} />}
+        {tab === 'buyers'    && <BuyerManagement buyers={buyers}        setBuyers={setBuyers} />}
+        {tab === 'fda'       && <FDAChecklist    fdaStatus={fdaStatus}  setFdaStatus={setFda} settings={settings} />}
+        {tab === 'schedule'  && <ShipSchedule    schedules={schedules} setSchedules={setSchedules} />}
+        {tab === 'tariff'    && <TariffSearch    settings={settings} products={products} />}
+        {tab === 'settings'  && <Settings        settings={settings}    setSettings={setSettings} products={products} buyers={buyers} fdaStatus={fdaStatus} shipHistory={shipHistory} schedules={schedules} />}
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
