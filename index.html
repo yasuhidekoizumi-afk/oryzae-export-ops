@@ -34,6 +34,7 @@ const TABS = [
   { id: 'schedule',  label: '船積管理',     icon: '🚢' },
   { id: 'tariff',    label: '関税情報',     icon: '🔍' },
   { id: 'settings',  label: '設定',         icon: '⚙️' },
+  { id: 'label',     label: 'ラベル作成',   icon: '🏷️' },
   { id: 'help',      label: '使い方',       icon: '❓' },
 ];
 
@@ -1697,6 +1698,189 @@ function ShipSchedule({ schedules, setSchedules }) {
   );
 }
 
+// ==================== LABEL MAKER ====================
+function LabelMaker({ products, settings }) {
+  const NUTRIENTS = [
+    { key: 'totalFat',    label: 'Total Fat',              unit: 'g',  dv: 78,   bold: true,  indent: 0 },
+    { key: 'satFat',      label: 'Saturated Fat',          unit: 'g',  dv: 20,   bold: false, indent: 1 },
+    { key: 'transFat',    label: 'Trans Fat',              unit: 'g',  dv: null, bold: false, indent: 1 },
+    { key: 'cholesterol', label: 'Cholesterol',            unit: 'mg', dv: 300,  bold: true,  indent: 0 },
+    { key: 'sodium',      label: 'Sodium',                 unit: 'mg', dv: 2300, bold: true,  indent: 0 },
+    { key: 'totalCarb',   label: 'Total Carbohydrate',     unit: 'g',  dv: 275,  bold: true,  indent: 0 },
+    { key: 'fiber',       label: 'Dietary Fiber',          unit: 'g',  dv: 28,   bold: false, indent: 1 },
+    { key: 'totalSugars', label: 'Total Sugars',           unit: 'g',  dv: null, bold: false, indent: 1 },
+    { key: 'addedSugars', label: 'Incl. Added Sugars',     unit: 'g',  dv: 50,   bold: false, indent: 2 },
+    { key: 'protein',     label: 'Protein',                unit: 'g',  dv: null, bold: true,  indent: 0 },
+  ];
+  const VITAMINS = [
+    { key: 'vitD',      label: 'Vitamin D',  unit: 'mcg', dv: 20   },
+    { key: 'calcium',   label: 'Calcium',    unit: 'mg',  dv: 1300 },
+    { key: 'iron',      label: 'Iron',       unit: 'mg',  dv: 18   },
+    { key: 'potassium', label: 'Potassium',  unit: 'mg',  dv: 4700 },
+  ];
+  const blank = {
+    productId: '', productNameEn: '', servingSize: '', servingsPerContainer: '', calories: '',
+    totalFat: '', satFat: '', transFat: '', cholesterol: '', sodium: '',
+    totalCarb: '', fiber: '', totalSugars: '', addedSugars: '', protein: '',
+    vitD: '', calcium: '', iron: '', potassium: '',
+    ingredients: '', containsAllergens: '', mayContain: '',
+    netWeightG: '', netWeightOz: '',
+    importerName: settings.companyNameEn || '', importerAddress: settings.companyAddressEn || '', countryOfOrigin: 'Japan',
+  };
+  const [form, setForm] = useState(() => ls.get('oryzae_label_draft', blank));
+  const upd = (k, v) => setForm(f => { const n = { ...f, [k]: v }; ls.set('oryzae_label_draft', n); return n; });
+  const handleProductSelect = (pid) => {
+    const p = products.find(x => x.id === pid);
+    setForm(f => { const n = { ...f, productId: pid, productNameEn: p ? p.name : f.productNameEn }; ls.set('oryzae_label_draft', n); return n; });
+  };
+  const pct = (amt, dv) => (!dv || !amt || isNaN(Number(amt))) ? null : Math.round((Number(amt) / dv) * 100);
+  const print = () => { const prev = document.title; document.title = `${form.productNameEn || 'Label'}_Nutrition_Facts`; window.print(); document.title = prev; };
+
+  const Field = ({ label, k, type = 'text', placeholder = '' }) => (
+    <div><label className="text-xs text-gray-500">{label}</label>
+      <input type={type} className="w-full border rounded p-2 mt-0.5 text-sm" value={form[k] ?? ''} onChange={e => upd(k, e.target.value)} placeholder={placeholder} /></div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h2 className="text-xl font-bold text-gray-800">米国向けラベル作成</h2>
+          <p className="text-sm text-gray-400">FDA 2020 Nutrition Facts フォーマット準拠</p>
+        </div>
+        <div className="no-print flex gap-2">
+          <button onClick={() => { if (confirm('入力内容をリセットしますか？')) { ls.set('oryzae_label_draft', blank); setForm(blank); } }} className="border border-gray-300 text-gray-600 px-3 py-2 rounded-lg text-sm hover:bg-gray-50">リセット</button>
+          <button onClick={print} className="bg-gray-800 text-white px-4 py-2 rounded-lg text-sm hover:bg-gray-700">🖨️ 印刷 / PDF保存</button>
+        </div>
+      </div>
+
+      <div className="flex flex-col lg:flex-row gap-6">
+        {/* 入力フォーム */}
+        <div className="no-print lg:w-96 space-y-4 flex-shrink-0">
+          <div className="bg-white rounded-xl p-4 shadow-sm space-y-3">
+            <h3 className="font-semibold text-gray-700">商品情報</h3>
+            <div><label className="text-xs text-gray-500">製品マスタから選択（任意）</label>
+              <select className="w-full border rounded p-2 mt-0.5 text-sm" value={form.productId} onChange={e => handleProductSelect(e.target.value)}>
+                <option value="">-- 選択 --</option>
+                {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <Field label="商品名（英語）*" k="productNameEn" placeholder="e.g. KOJIPOP Fermented Soda" />
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="Serving Size" k="servingSize" placeholder="1 can (350mL)" />
+              <Field label="Servings Per Container" k="servingsPerContainer" placeholder="1" />
+            </div>
+            <Field label="Calories" k="calories" type="number" placeholder="90" />
+          </div>
+
+          <div className="bg-white rounded-xl p-4 shadow-sm">
+            <h3 className="font-semibold text-gray-700 mb-3">栄養成分（1サービングあたり）</h3>
+            <div className="grid grid-cols-2 gap-2">
+              {[...NUTRIENTS, ...VITAMINS].map(n => (
+                <div key={n.key}><label className="text-xs text-gray-500">{n.label}（{n.unit}）</label>
+                  <input type="number" className="w-full border rounded p-1.5 mt-0.5 text-sm" value={form[n.key] ?? ''} onChange={e => upd(n.key, e.target.value)} placeholder="0" /></div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl p-4 shadow-sm space-y-3">
+            <h3 className="font-semibold text-gray-700">原材料・アレルゲン</h3>
+            <div><label className="text-xs text-gray-500">Ingredients（含有量順・英語）</label>
+              <textarea className="w-full border rounded p-2 mt-0.5 text-sm" rows={3} value={form.ingredients} onChange={e => upd('ingredients', e.target.value)} placeholder="Carbonated water, Rice koji, Citric acid" /></div>
+            <Field label="CONTAINS（確定アレルゲン）" k="containsAllergens" placeholder="Wheat, Soybeans" />
+            <Field label="May contain（混入注意・任意）" k="mayContain" placeholder="Tree nuts" />
+          </div>
+
+          <div className="bg-white rounded-xl p-4 shadow-sm space-y-3">
+            <h3 className="font-semibold text-gray-700">内容量・会社情報</h3>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="内容量（g / mL）" k="netWeightG" type="number" placeholder="350" />
+              <Field label="内容量（oz / fl.oz）" k="netWeightOz" type="number" placeholder="11.83" />
+            </div>
+            <Field label="輸入者・会社名（英語）" k="importerName" />
+            <Field label="住所（英語）" k="importerAddress" />
+            <Field label="原産国" k="countryOfOrigin" placeholder="Japan" />
+          </div>
+        </div>
+
+        {/* ラベルプレビュー */}
+        <div className="flex-1 print-area">
+          <div className="bg-white rounded-xl p-6 shadow-sm">
+            <p className="no-print text-xs text-gray-400 mb-4 font-medium">▼ 印刷プレビュー</p>
+            <div style={{ fontFamily: 'Arial, Helvetica, sans-serif', maxWidth: '300px' }}>
+              {form.productNameEn && (
+                <p style={{ fontFamily: '"Arial Black", Arial, sans-serif', fontSize: '22px', fontWeight: '900', marginBottom: '2px' }}>{form.productNameEn}</p>
+              )}
+              {(form.netWeightG || form.netWeightOz) && (
+                <p style={{ fontSize: '12px', marginBottom: '10px' }}>
+                  {form.netWeightOz ? `${form.netWeightOz} fl oz` : ''}{form.netWeightOz && form.netWeightG ? ' (' : ''}{form.netWeightG ? `${form.netWeightG} mL` : ''}{form.netWeightOz && form.netWeightG ? ')' : ''}
+                </p>
+              )}
+
+              {/* Nutrition Facts Box */}
+              <div style={{ border: '3px solid black', padding: '4px 6px', width: '280px', boxSizing: 'border-box' }}>
+                <p style={{ fontFamily: '"Arial Black", Arial, sans-serif', fontSize: '32px', fontWeight: '900', lineHeight: '1', marginBottom: '1px' }}>Nutrition Facts</p>
+                {form.servingsPerContainer && <p style={{ fontSize: '11px', margin: '0' }}>{form.servingsPerContainer} serving{form.servingsPerContainer !== '1' ? 's' : ''} per container</p>}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', borderBottom: '8px solid black', paddingBottom: '1px', marginBottom: '1px' }}>
+                  <span style={{ fontWeight: 'bold', fontSize: '12px' }}>Serving size</span>
+                  <span style={{ fontSize: '11px' }}>{form.servingSize}</span>
+                </div>
+                <p style={{ fontSize: '10px', fontWeight: 'bold', margin: '0' }}>Amount per serving</p>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', borderBottom: '4px solid black', paddingBottom: '1px' }}>
+                  <span style={{ fontFamily: '"Arial Black", Arial, sans-serif', fontSize: '18px', fontWeight: '900' }}>Calories</span>
+                  <span style={{ fontFamily: '"Arial Black", Arial, sans-serif', fontSize: '40px', fontWeight: '900', lineHeight: '1' }}>{form.calories || ''}</span>
+                </div>
+                <p style={{ textAlign: 'right', fontSize: '10px', borderBottom: '1px solid black', padding: '1px 0', margin: '0' }}>% Daily Value*</p>
+                {NUTRIENTS.map((n, i) => {
+                  const dvPct = pct(form[n.key], n.dv);
+                  const isLast = i === NUTRIENTS.length - 1;
+                  return (
+                    <div key={n.key} style={{ display: 'flex', justifyContent: 'space-between', borderBottom: isLast ? '4px solid black' : '0.5px solid black', padding: '1px 0 1px ' + (n.indent === 2 ? '24px' : n.indent === 1 ? '12px' : '0') }}>
+                      <span style={{ fontWeight: n.bold ? 'bold' : 'normal', fontSize: '11px' }}>
+                        {n.label} <span style={{ fontWeight: 'normal' }}>{form[n.key] !== '' && form[n.key] != null ? `${form[n.key]}${n.unit}` : ''}</span>
+                      </span>
+                      {dvPct !== null && <span style={{ fontWeight: 'bold', fontSize: '11px' }}>{dvPct}%</span>}
+                    </div>
+                  );
+                })}
+                <div style={{ borderBottom: '8px solid black' }}>
+                  {VITAMINS.map(v => {
+                    const dvPct = pct(form[v.key], v.dv);
+                    return (
+                      <div key={v.key} style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '0.5px solid black', padding: '1px 0', fontSize: '11px' }}>
+                        <span>{v.label} {form[v.key] !== '' && form[v.key] != null ? `${form[v.key]}${v.unit}` : ''}</span>
+                        {dvPct !== null && <span style={{ fontWeight: 'bold' }}>{dvPct}%</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+                <p style={{ fontSize: '8.5px', lineHeight: '1.3', marginTop: '3px', color: '#111' }}>* The % Daily Value (DV) tells you how much a nutrient in a serving of food contributes to a daily diet. 2,000 calories a day is used for general nutrition advice.</p>
+              </div>
+
+              {form.ingredients && (
+                <p style={{ maxWidth: '280px', marginTop: '8px', fontSize: '11px', lineHeight: '1.4' }}><strong>INGREDIENTS: </strong>{form.ingredients}.</p>
+              )}
+              {form.containsAllergens && (
+                <p style={{ maxWidth: '280px', marginTop: '4px', fontSize: '11px' }}><strong>CONTAINS: {form.containsAllergens.toUpperCase()}.</strong></p>
+              )}
+              {form.mayContain && (
+                <p style={{ maxWidth: '280px', marginTop: '2px', fontSize: '11px' }}>May contain {form.mayContain}.</p>
+              )}
+              {(form.importerName || form.importerAddress || form.countryOfOrigin) && (
+                <div style={{ maxWidth: '280px', marginTop: '10px', fontSize: '10px', color: '#333', lineHeight: '1.5' }}>
+                  {form.importerName && <p style={{ margin: 0 }}>{form.importerName}</p>}
+                  {form.importerAddress && <p style={{ margin: 0 }}>{form.importerAddress}</p>}
+                  {form.countryOfOrigin && <p style={{ margin: 0 }}>Product of {form.countryOfOrigin}</p>}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ==================== HELP ====================
 function Help() {
   const [open, setOpen] = useState(null);
@@ -2012,6 +2196,7 @@ function App() {
         {tab === 'schedule'  && <ShipSchedule    schedules={schedules} setSchedules={setSchedules} />}
         {tab === 'tariff'    && <TariffSearch    settings={settings} products={products} />}
         {tab === 'settings'  && <Settings        settings={settings}    setSettings={setSettings} products={products} buyers={buyers} fdaStatus={fdaStatus} shipHistory={shipHistory} schedules={schedules} />}
+        {tab === 'label'     && <LabelMaker     products={products}    settings={settings} />}
         {tab === 'help'      && <Help />}
       </main>
     </div>
