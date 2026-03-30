@@ -1334,7 +1334,63 @@ function Settings({ settings, setSettings, products, buyers, fdaStatus, shipHist
   const [form, setForm]   = useState({ ...settings });
   const [saved, setSaved] = useState(false);
   const [section, setSection] = useState('company');
+  const [resetInput, setResetInput] = useState('');
+  const [gistToken,  setGistToken]  = useState(() => ls.get('oryzae_gist_token', ''));
+  const [gistId,     setGistId]     = useState(() => ls.get('oryzae_gist_id', ''));
+  const [gistStatus, setGistStatus] = useState('');
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const buildGistPayload = () => ({
+    description: 'ORYZAE Export Ops backup',
+    public: false,
+    files: {
+      'oryzae-export-ops.json': {
+        content: JSON.stringify({ version: '2.2', savedAt: new Date().toISOString(), settings, products, buyers, fdaStatus, shipHistory, schedules }, null, 2)
+      }
+    }
+  });
+
+  const syncToGist = async () => {
+    if (!gistToken) return setGistStatus('error:トークン未設定');
+    setGistStatus('syncing');
+    try {
+      const headers = { Authorization: `Bearer ${gistToken}`, 'Content-Type': 'application/json' };
+      let id = gistId;
+      if (!id) {
+        const res = await fetch('https://api.github.com/gists', { method: 'POST', headers, body: JSON.stringify(buildGistPayload()) });
+        if (!res.ok) throw new Error(res.status);
+        const d = await res.json();
+        id = d.id;
+        ls.set('oryzae_gist_id', id);
+        setGistId(id);
+      } else {
+        const res = await fetch(`https://api.github.com/gists/${id}`, { method: 'PATCH', headers, body: JSON.stringify(buildGistPayload()) });
+        if (!res.ok) throw new Error(res.status);
+      }
+      ls.set('oryzae_gist_synced_at', new Date().toISOString());
+      setGistStatus('ok:' + new Date().toLocaleTimeString('ja-JP'));
+    } catch (e) { setGistStatus('error:' + e.message); }
+  };
+
+  const restoreFromGist = async () => {
+    if (!gistToken || !gistId) return setGistStatus('error:トークンまたはGist IDが未設定');
+    if (!confirm('Gistのデータで現在のデータを上書きしますか？')) return;
+    setGistStatus('restoring');
+    try {
+      const res = await fetch(`https://api.github.com/gists/${gistId}`, { headers: { Authorization: `Bearer ${gistToken}` } });
+      if (!res.ok) throw new Error(res.status);
+      const d = await res.json();
+      const content = JSON.parse(d.files['oryzae-export-ops.json'].content);
+      ls.set('oryzae_products',  content.products);
+      ls.set('oryzae_settings',  content.settings);
+      ls.set('oryzae_buyers',    content.buyers);
+      ls.set('oryzae_fda',       content.fdaStatus);
+      ls.set('oryzae_shipments', content.shipHistory);
+      ls.set('oryzae_schedules', content.schedules);
+      setGistStatus('ok:復元完了');
+      setTimeout(() => window.location.reload(), 800);
+    } catch (e) { setGistStatus('error:' + e.message); }
+  };
 
   const save = () => { setSettings(form); setSaved(true); setTimeout(() => setSaved(false), 2000); window.scrollTo({ top: 0, behavior: 'smooth' }); };
 
@@ -1364,7 +1420,7 @@ function Settings({ settings, setSettings, products, buyers, fdaStatus, shipHist
     e.target.value = '';
   };
 
-  const SECTIONS = [{ id: 'company', label: '会社情報' }, { id: 'pricing', label: '価格計算' }, { id: 'slack', label: 'Slack' }, { id: 'data', label: 'データ管理' }, { id: 'deploy', label: '社内共有' }];
+  const SECTIONS = [{ id: 'company', label: '会社情報' }, { id: 'pricing', label: '価格計算' }, { id: 'slack', label: 'Slack' }, { id: 'cloud', label: '☁️ クラウド' }, { id: 'data', label: 'データ管理' }, { id: 'deploy', label: '社内共有' }];
 
   return (
     <div>
@@ -1467,6 +1523,66 @@ function Settings({ settings, setSettings, products, buyers, fdaStatus, shipHist
         </div>
       )}
 
+      {section === 'cloud' && (
+        <div className="bg-white rounded-xl p-4 shadow-sm space-y-5">
+          <div>
+            <h3 className="font-semibold text-gray-700">GitHub Gist クラウドバックアップ</h3>
+            <p className="text-xs text-gray-400 mt-1">無料・プライベート保存。ブラウザキャッシュを消してもGistから復元できます。</p>
+          </div>
+
+          <div className="bg-blue-50 rounded-lg p-3 text-xs text-blue-700 space-y-1">
+            <p className="font-semibold">初回セットアップ（2分）</p>
+            <ol className="list-decimal list-inside space-y-1">
+              <li>github.com → Settings → Developer settings → Personal access tokens → Tokens (classic)</li>
+              <li>「Generate new token」→ スコープ: <span className="font-mono font-bold">gist</span> にチェック → Generate</li>
+              <li>表示されたトークンをコピーして下の欄に貼り付け</li>
+              <li>「今すぐ同期」を押す → 自動でGistが作成されます</li>
+            </ol>
+          </div>
+
+          <div className="space-y-3">
+            <div>
+              <label className="text-sm text-gray-600 font-medium">GitHub Personal Access Token</label>
+              <input type="password" className="w-full border rounded p-2 mt-1 font-mono text-sm"
+                value={gistToken} onChange={e => { setGistToken(e.target.value); ls.set('oryzae_gist_token', e.target.value); }}
+                placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" />
+            </div>
+            {gistId && (
+              <div>
+                <label className="text-sm text-gray-600 font-medium">Gist ID（自動設定済み）</label>
+                <p className="font-mono text-xs text-gray-500 mt-1 bg-gray-50 rounded p-2 break-all">{gistId}</p>
+              </div>
+            )}
+          </div>
+
+          {gistStatus && (
+            <div className={`rounded-lg px-3 py-2 text-sm font-medium ${gistStatus.startsWith('error') ? 'bg-red-50 text-red-600' : gistStatus === 'syncing' || gistStatus === 'restoring' ? 'bg-yellow-50 text-yellow-700' : 'bg-green-50 text-green-700'}`}>
+              {gistStatus === 'syncing' ? '⏳ 同期中...' : gistStatus === 'restoring' ? '⏳ 復元中...' : gistStatus.startsWith('error') ? '❌ ' + gistStatus.replace('error:', '') : '✅ 同期完了 ' + gistStatus.replace('ok:', '')}
+            </div>
+          )}
+
+          <div className="flex gap-3">
+            <button onClick={syncToGist} className="flex-1 bg-gray-800 text-white py-2 rounded-lg hover:bg-gray-700 text-sm font-medium">
+              ☁️ 今すぐ同期（Gistに保存）
+            </button>
+            <button onClick={restoreFromGist} disabled={!gistId} className="flex-1 border border-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-50 text-sm font-medium disabled:opacity-40">
+              🔄 Gistから復元
+            </button>
+          </div>
+
+          {ls.get('oryzae_gist_synced_at', null) && (
+            <p className="text-xs text-gray-400">最終同期: {new Date(ls.get('oryzae_gist_synced_at', '')).toLocaleString('ja-JP')}</p>
+          )}
+
+          <div className="border-t pt-4">
+            <p className="text-xs text-gray-500">
+              ⚠️ トークンはLocalStorageに保存されます。共有PCでは使用しないでください。<br />
+              Gistは<strong>プライベート</strong>設定で作成されます（URLを知っている人のみアクセス可）。
+            </p>
+          </div>
+        </div>
+      )}
+
       {section === 'data' && (
         <div className="bg-white rounded-xl p-4 shadow-sm">
           <h3 className="font-semibold text-gray-700 mb-1">データ管理</h3>
@@ -1484,14 +1600,18 @@ function Settings({ settings, setSettings, products, buyers, fdaStatus, shipHist
           </div>
           <div className="border-t pt-3">
             <p className="text-xs text-red-400 mb-2">⚠️ 危険操作 — 全データを削除して初期状態に戻します</p>
-            <button onClick={() => {
-              if (confirm('全データをリセットしますか？\nこの操作は取り消せません。')) {
+            <p className="text-xs text-gray-500 mb-2">確認のため <span className="font-mono font-bold text-red-600">RESET</span> と入力してください</p>
+            <div className="flex gap-2">
+              <input className="flex-1 border border-red-200 rounded p-2 text-sm font-mono"
+                value={resetInput} onChange={e => setResetInput(e.target.value)}
+                placeholder="RESET" />
+              <button disabled={resetInput !== 'RESET'} onClick={() => {
                 Object.keys(localStorage).filter(k => k.startsWith('oryzae')).forEach(k => localStorage.removeItem(k));
                 window.location.reload();
-              }
-            }} className="w-full bg-red-600 text-white py-2 rounded-lg hover:bg-red-700 text-sm font-medium">
-              全データをリセット（初期化）
-            </button>
+              }} className="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-30 disabled:cursor-not-allowed">
+                リセット実行
+              </button>
+            </div>
           </div>
         </div>
       )}
