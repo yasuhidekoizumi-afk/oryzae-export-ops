@@ -34,6 +34,7 @@ const TABS = [
   { id: 'schedule',  label: '船積管理',     icon: '🚢' },
   { id: 'tariff',    label: '関税情報',     icon: '🔍' },
   { id: 'settings',  label: '設定',         icon: '⚙️' },
+  { id: 'help',      label: '使い方',       icon: '❓' },
 ];
 
 const DEFAULT_PRODUCTS = [
@@ -1696,6 +1697,205 @@ function ShipSchedule({ schedules, setSchedules }) {
   );
 }
 
+// ==================== HELP ====================
+function Help() {
+  const [open, setOpen] = useState(null);
+  const sections = [
+    {
+      id: 'overview', icon: '🏠', title: 'このツールについて',
+      content: `ORYZAE Export Ops は、株式会社オリゼ 海外事業部向けの輸出管理ツールです。
+ブラウザだけで動作し、インストール不要。データはお使いのブラウザに保存されます。
+
+【データについて】
+・データは各自のブラウザ（LocalStorage）に保存されます
+・他のPCやブラウザとは共有されません
+・共有するには「設定 → データ管理 → エクスポート」でJSONファイルを渡してください`,
+    },
+    {
+      id: 'products', icon: '📦', title: '製品マスタ',
+      content: `輸出する商品を登録・管理するタブです。
+
+【登録できる情報】
+・商品名 / HSコード（関税分類）/ 製造原価（円）/ 重量（kg）/ 単位 / メモ
+
+【使い方】
+1. 「+ 商品追加」ボタンで新規登録
+2. 登録した商品は「価格計算」「輸出書類」「関税情報」タブで使用されます
+3. 「価格計算 →」ボタンで該当商品をセットしたまま価格計算に移動できます
+
+【HSコードについて】
+現在の暫定コードは目安です。実際の輸出前に税関または通関業者に確認してください。`,
+    },
+    {
+      id: 'pricing', icon: '💰', title: '価格計算',
+      content: `製造原価からFOB・CIF・ランデッドコスト・卸値・小売価格を自動計算します。
+
+【計算の流れ】
+製造原価（円）→ FOB → CIF → ランデッドコスト → 卸値 → 小売価格
+
+【単品モード / 全商品比較モード】
+・単品: 1商品を詳細に計算。保険料率を個別指定できます
+・全商品比較: 登録商品を一覧で比較。CSV出力可能
+
+【為替レートについて】
+・「レート取得」ボタンで最新レートを取得（Frankfurter API 使用）
+・取得済みなら24時間キャッシュを自動使用
+・起動時にキャッシュ切れなら自動取得します
+
+【書類作成への連携】
+「書類作成 →」ボタンで計算結果を輸出書類タブに引き継げます`,
+    },
+    {
+      id: 'documents', icon: '📄', title: '輸出書類',
+      content: `4種類の輸出書類を作成・保存できます。
+
+【書類の種類】
+・Commercial Invoice（商業インボイス）
+・Packing List（梱包明細書）
+・Certificate of Origin（原産地証明書）
+・SLI（Shipper's Letter of Instruction）
+
+【使い方】
+1. 書類種別を選択
+2. バイヤーを選択 → Consignee情報が自動入力されます
+3. 商品ラインを追加（価格計算から引き継ぎも可）
+4. 「保存」で履歴に記録。「印刷」でPDF保存
+
+【PDF保存時のファイル名】
+「インボイス番号_書類種別_バイヤー名」で自動設定されます`,
+    },
+    {
+      id: 'buyers', icon: '🤝', title: 'バイヤー管理',
+      content: `海外バイヤーの情報・商談状況・アクション履歴を管理します。
+
+【ステータス】
+リード → サンプル送付済 → 商談中 → 取引中 / 休眠
+
+【期限管理】
+・「次アクション日」を設定しておくと、期限が来たらホーム画面・タブバッジで警告
+・「今日接触」ボタンで最終接触日をワンクリック更新
+
+【商談履歴】
+カード展開 → 編集モーダルでEnterキーを押すごとにタイムラインに追記されます
+
+【書類との連携】
+輸出書類タブで「バイヤーから入力」ボタンを押すと、Consignee情報が自動入力されます`,
+    },
+    {
+      id: 'fda', icon: '🏥', title: 'FDA対応',
+      content: `米国輸出に必要なFDA関連の確認事項を14項目でチェックリスト管理します。
+
+【チェック状態】
+・未対応（デフォルト）/ 対応済み ✓ / 対象外 N/A
+
+【必須項目（赤バッジ）】
+FDA施設登録・Prior Notice・FSVP・英語ラベル・Nutrition Facts・成分表・アレルゲン・アルコール確認・ヘルスクレームの9項目
+
+【メモ機能】
+各項目に「+ メモ」で担当者メモを追記できます
+
+【施設登録番号】
+上部の入力欄にFDA施設登録番号を保存できます
+
+【重要】
+このチェックリストは参考情報です。実際の輸出前に専門家（通関業者・FDA登録代理人）に確認してください。`,
+    },
+    {
+      id: 'schedule', icon: '🚢', title: '船積管理',
+      content: `船積みスケジュールの登録・ステータス管理を行います。
+
+【ステータスの流れ】
+予約中 → 積込済 → 航行中 → 入港済
+
+「次へ →」ボタンでワンクリックで次のステータスに進みます
+
+【遅延検出】
+入港予定日を過ぎてもステータスが「入港済」でない場合、遅延バッジを表示します
+
+【書類との紐付け】
+インボイス番号を登録しておくと、書類と照合できます`,
+    },
+    {
+      id: 'tariff', icon: '🔍', title: '関税情報',
+      content: `HSコードの関税率をすばやく参照できます。
+
+【クイック参照】
+製品マスタに登録した商品のHSコードを一覧表示。クリックで参照します
+
+【カスタム検索】
+任意のHSコードを直接入力して検索できます
+
+【Slack送信】
+検索結果をSlackに送信できます（設定でWebhook URLを設定してください）`,
+    },
+    {
+      id: 'settings', icon: '⚙️', title: '設定',
+      content: `5つのセクションで各種設定を管理します。
+
+【会社情報】
+書類に印字される会社名（日/英）・住所・連絡先
+
+【価格計算】
+海上運賃・保険料率・国内物流費・マークアップ率のデフォルト値
+
+【Slack】
+Webhook URLの設定・ステータスの手動/自動送信・ブラウザ通知の有効化
+
+【データ管理】
+全データのJSON export/import・全リセット
+
+【社内共有】
+GitHub Pages URL・データ共有手順`,
+    },
+    {
+      id: 'tips', icon: '💡', title: 'よくある使い方・Tips',
+      content: `【初回セットアップ手順】
+1. 設定 → 会社情報 を入力・保存
+2. 製品マスタ → 商品を登録
+3. 価格計算 → レート取得 → 各種コストを確認
+4. バイヤー管理 → バイヤーを登録
+5. FDA対応 → 必須9項目を順番にチェック
+
+【社内で共有するには】
+設定 → データ管理 → エクスポート（JSON）でデータを保存し、相手に渡してインポートしてもらう
+
+【毎朝の使い方】
+ホームタブで今日の要対応事項（期限切れ・FDA未対応・遅延船）を確認 → 各タブで対応
+
+【Slack自動通知】
+設定 → Slack → Webhook URLを設定 → 「起動時に自動送信」をON
+毎朝アプリを開くと自動でステータス通知が届きます`,
+    },
+  ];
+
+  return (
+    <div className="space-y-4 max-w-3xl">
+      <div>
+        <h2 className="text-xl font-bold text-gray-800 mb-0.5">使い方ガイド</h2>
+        <p className="text-sm text-gray-400">各セクションをクリックして展開してください</p>
+      </div>
+      <div className="space-y-2">
+        {sections.map(s => (
+          <div key={s.id} className="bg-white rounded-xl shadow-sm overflow-hidden">
+            <button onClick={() => setOpen(open === s.id ? null : s.id)}
+              className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-gray-50 transition-colors">
+              <span className="flex items-center gap-3 font-medium text-gray-800">
+                <span className="text-xl">{s.icon}</span>{s.title}
+              </span>
+              <span className="text-gray-400 text-sm">{open === s.id ? '▲' : '▼'}</span>
+            </button>
+            {open === s.id && (
+              <div className="px-5 pb-5 border-t pt-4">
+                <pre className="text-sm text-gray-600 whitespace-pre-wrap font-sans leading-relaxed">{s.content}</pre>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ==================== APP ====================
 function App() {
   const [tab,         setTab]    = useState('home');
@@ -1812,6 +2012,7 @@ function App() {
         {tab === 'schedule'  && <ShipSchedule    schedules={schedules} setSchedules={setSchedules} />}
         {tab === 'tariff'    && <TariffSearch    settings={settings} products={products} />}
         {tab === 'settings'  && <Settings        settings={settings}    setSettings={setSettings} products={products} buyers={buyers} fdaStatus={fdaStatus} shipHistory={shipHistory} schedules={schedules} />}
+        {tab === 'help'      && <Help />}
       </main>
     </div>
   );
