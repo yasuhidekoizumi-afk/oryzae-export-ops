@@ -46,7 +46,7 @@ const DEFAULT_PRODUCTS = [
 const DEFAULT_SETTINGS = {
   companyNameJa: '株式会社オリゼ', companyNameEn: 'ORYZAE Inc.',
   companyAddressEn: 'Tokyo, Japan', companyEmail: '', companyPhone: '',
-  slackWebhook: '', freightRate: 3.5, insuranceRate: 0.3,
+  slackWebhook: '', slackAutoNotify: false, freightRate: 3.5, insuranceRate: 0.3,
   domesticLogistics: 500, wholesaleMarkup: 2.0, retailMarkup: 2.0,
 };
 
@@ -1434,6 +1434,34 @@ function Settings({ settings, setSettings, products, buyers, fdaStatus, shipHist
               📨 ステータスをSlackに送信
             </button>
           </div>
+          <div className="mt-4 border-t pt-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-700">起動時に自動送信（1日1回）</p>
+                <p className="text-xs text-gray-400 mt-0.5">ツールを開いたとき、1日1回だけ自動でSlack通知</p>
+              </div>
+              <button onClick={() => upd('slackAutoNotify', !form.slackAutoNotify)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${form.slackAutoNotify ? 'bg-purple-600' : 'bg-gray-300'}`}>
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${form.slackAutoNotify ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+            </div>
+          </div>
+          <div className="mt-4 border-t pt-4">
+            <p className="text-sm font-medium text-gray-700 mb-1">ブラウザ通知</p>
+            <p className="text-xs text-gray-400 mb-3">起動時にバイヤー期限切れ・FDA未対応をOSのプッシュ通知で表示（1日1回）</p>
+            {(() => {
+              if (!('Notification' in window)) return <p className="text-xs text-gray-400">このブラウザは通知に対応していません</p>;
+              const perm = Notification.permission;
+              if (perm === 'granted') return <p className="text-xs text-green-600 font-medium">✓ 通知が有効です</p>;
+              if (perm === 'denied')  return <p className="text-xs text-red-500">通知がブロックされています。ブラウザの設定から許可してください</p>;
+              return (
+                <button onClick={() => Notification.requestPermission()}
+                  className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700">
+                  🔔 ブラウザ通知を有効化
+                </button>
+              );
+            })()}
+          </div>
         </div>
       )}
 
@@ -1686,6 +1714,55 @@ function App() {
   useEffect(() => ls.set('oryzae_fda',       fdaStatus), [fdaStatus]);
   useEffect(() => ls.set('oryzae_shipments', shipHistory), [shipHistory]);
   useEffect(() => ls.set('oryzae_schedules', schedules),   [schedules]);
+
+  // ==================== 起動時自動化 ====================
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
+
+    // 1. 為替レート自動取得（キャッシュ切れのとき）
+    if (!getCachedRate()) fetchRate().catch(() => {});
+
+    // 2. Slack自動通知（1日1回）
+    if (settings.slackAutoNotify && settings.slackWebhook) {
+      const last = ls.get('oryzae_last_slack_notify', '');
+      if (last !== today) {
+        ls.set('oryzae_last_slack_notify', today);
+        const c = getCachedRate();
+        const overdueB = buyers.filter(b => b.nextActionDate && b.nextActionDate < today);
+        const fdaCrit  = FDA_CHECKLIST.filter(x => x.critical && (fdaStatus[x.id] || 'pending') !== 'done');
+        const text = [
+          '*ORYZAE Export Ops — 本日のステータス（自動通知）*',
+          `📅 ${new Date().toLocaleDateString('ja-JP')}`,
+          c ? `💱 為替: 1円 = $${c.rate.toFixed(6)}（${c.date}）` : '💱 為替: 未取得',
+          `🏥 FDA必須未対応: ${fdaCrit.length}件${fdaCrit.length > 0 ? ' — ' + fdaCrit.slice(0, 3).map(x => x.title).join('、') : ' ✓'}`,
+          `🤝 バイヤー期限切れ: ${overdueB.length}件${overdueB.length > 0 ? ' — ' + overdueB.map(b => b.company).slice(0, 3).join('、') : ' ✓'}`,
+        ].join('\n');
+        fetch(settings.slackWebhook, { method: 'POST', body: JSON.stringify({ text }) }).catch(() => {});
+      }
+    }
+
+    // 3. ブラウザ通知（1日1回・許可済みの場合）
+    if ('Notification' in window && Notification.permission === 'granted') {
+      const last = ls.get('oryzae_last_browser_notify', '');
+      if (last !== today) {
+        ls.set('oryzae_last_browser_notify', today);
+        const overdueB = buyers.filter(b => b.nextActionDate && b.nextActionDate < today);
+        const fdaCrit  = FDA_CHECKLIST.filter(x => x.critical && (fdaStatus[x.id] || 'pending') !== 'done');
+        if (overdueB.length > 0) {
+          new Notification('ORYZAE Export Ops', {
+            body: `バイヤー対応期限切れ ${overdueB.length}件: ${overdueB.map(b => b.company).slice(0, 3).join('、')}`,
+            icon: '',
+          });
+        }
+        if (fdaCrit.length > 0) {
+          new Notification('ORYZAE Export Ops', {
+            body: `FDA必須未対応 ${fdaCrit.length}件あります`,
+            icon: '',
+          });
+        }
+      }
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 価格計算 → 書類作成へ連携
   const handleSendToDoc = (product, result, qty) => {
